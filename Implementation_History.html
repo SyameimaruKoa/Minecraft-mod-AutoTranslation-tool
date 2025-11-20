@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minecraft Mod Translator - Implementation History</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent-color: #4caf50;
+            --card-bg: #2d2d2d;
+            --border-color: #333;
+            --tag-new: #1976d2;
+            --tag-fix: #d32f2f;
+            --tag-update: #fbc02d;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            border-bottom: 2px solid var(--accent-color);
+            padding-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0;
+            color: var(--accent-color);
+        }
+
+        .timeline {
+            position: relative;
+        }
+
+        .version-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 25px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            transition: transform 0.2s ease;
+        }
+
+        .version-card:hover {
+            transform: translateY(-3px);
+            border-color: var(--accent-color);
+        }
+
+        .version-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 10px;
+        }
+
+        .version-number {
+            font-size: 1.4em;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+
+        .release-desc {
+            font-size: 0.9em;
+            color: #aaa;
+            font-style: italic;
+        }
+
+        ul {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        li {
+            margin-bottom: 12px;
+            padding-left: 24px;
+            position: relative;
+        }
+
+        li::before {
+            content: "✔";
+            position: absolute;
+            left: 0;
+            color: var(--accent-color);
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: bold;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+
+        .tag-new {
+            background-color: var(--tag-new);
+            color: white;
+        }
+
+        .tag-fix {
+            background-color: var(--tag-fix);
+            color: white;
+        }
+
+        .tag-update {
+            background-color: var(--tag-update);
+            color: #333;
+        }
+
+        code {
+            background-color: #333;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #ffab91;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            font-size: 0.8em;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🛠️ Implementation History</h1>
+            <p>Minecraft Mod Auto Translator (AI Powered)</p>
+        </header>
+
+        <div class="timeline">
+
+            <!-- Version 3.4 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.4 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Lite Strategy & Self-Healing</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>Lite限定モード:</strong> <code>--lite-only</code>
+                        オプションを追加。レート制限対策として、軽量モデルのみに限定して動作させる機能。</li>
+                    <li><span class="tag tag-new">New</span> <strong>自動修復機能 (Self-Healing):</strong>
+                        起動時に出力済みファイル（<code>ja_jp.json</code>）とキャッシュを全スキャンし、「Error 504」などの汚染データを物理的に削除して再翻訳対象にする機能。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>優先順位の刷新:</strong> RPD（1日あたりのリクエスト数）を重視。Gemini
+                        2.5 Lite (RPD 1000) を主力とし、Gemma 3 (RPD 14400) を「最後の砦」として配置する鉄壁の布陣へ変更。</li>
+                    <li><span class="tag tag-new">New</span> <strong>詳細進捗可視化:</strong>
+                        ファイル単位だけでなく、内部のバッチ通信状況（<code>Translating: 1/86</code>）をプログレスバーで可視化し、フリーズの誤解を解消。</li>
+                    <li><span class="tag tag-new">New</span> <strong>モデルチェッカー:</strong>
+                        引数なしで起動した際に、APIキーで利用可能なモデル一覧を表示する機能を追加。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>429エラー対策強化:</strong>
+                        レート制限時は待機せず即座に次のモデルへスイッチし、全モデル枯渇時のみ待機するロジックに変更。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.3 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.3</span>
+                    <span class="release-desc">Custom Path Support</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>出力先自由指定:</strong> <code>start.bat</code>
+                        で出力先フォルダのフルパス指定やドラッグ＆ドロップ入力に対応。デスクトップや別ドライブへの保存が可能に。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>パス表示改善:</strong> 実行ログに出力先の絶対パスを表示し、保存場所を明確化。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.2 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.2</span>
+                    <span class="release-desc">Manual Selection & Project Isolation</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-update">Update</span> <strong>プロジェクト別管理:</strong>
+                        キャッシュとログの保存場所を、スクリプト直下から「各出力リソースパックフォルダ内」に変更。複数プロジェクトの並行作業が可能に。</li>
+                    <li><span class="tag tag-new">New</span> <strong>手動モデル選択モード:</strong>
+                        自動選択に頼らず、APIキーで利用可能なモデル一覧からユーザーが直接番号で選べる機能を追加。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.1 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.1</span>
+                    <span class="release-desc">Statistics & Visibility</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>詳細統計表示:</strong>
+                        フォルダ内の全ファイル数、Modファイル数、スキップ済み数を明確に表示し、「Mod数が合わない」問題を解決。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>探索ロジックの適正化:</strong>
+                        再帰探索（サブフォルダ探索）を廃止し、ユーザーの期待値に近い「直下フォルダのみ」の探索に戻した。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>Mod認識修正:</strong> <code>.jar</code> に加えて
+                        <code>.zip</code> 形式のファイルも正しく認識するように修正。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.0 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.0</span>
+                    <span class="release-desc">REST API & Stability Overhaul</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-fix">Fix</span> <strong>通信方式の刷新 (REST API化):</strong>
+                        フリーズやクラッシュの原因となっていた公式SDK (gRPC) を廃止し、Python標準の <code>requests</code> を用いたREST
+                        API直接通信へ完全移行。これにより安定性が劇的に向上。</li>
+                    <li><span class="tag tag-new">New</span> <strong>モデル自動探索機能:</strong>
+                        決め打ちのモデル名ではなく、APIキーを使って「現在利用可能なモデル一覧」を取得し、最適なものを自動で選ぶロジックを実装（404エラー根絶）。</li>
+                    <li><span class="tag tag-new">New</span> <strong>デバッグ詳細表示:</strong>
+                        APIエラー時にHTTPステータスコードとメッセージ全文を表示するように変更。</li>
+                </ul>
+            </div>
+
+            <!-- Version 2.5 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v2.5</span>
+                    <span class="release-desc">Fallback System & Batch Fixes</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>Google翻訳フォールバック:</strong>
+                        AI翻訳がエラー（404/429等）になった際、処理を止めずにGoogle翻訳へ自動で切り替える機能を実装。</li>
+                    <li><span class="tag tag-new">New</span> <strong>リアルタイム可視化:</strong> プログレスバーにフォールバック発生回数をリアルタイムで表示。
+                    </li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>バッチファイル安定化:</strong> 日本語コメントによる文字化け、<code>&</code>
+                        記号による構文エラー、クリップボード誤爆問題を修正（<code>choice</code>コマンド導入、英語UI化）。</li>
+                </ul>
+            </div>
+
+            <!-- Version 2.0 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v2.0</span>
+                    <span class="release-desc">AI Integration</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>Gemini AI搭載:</strong>
+                        単語置換ではなく、JSONをまとめてAIに投げ、文脈（Minecraft用語）を考慮した翻訳を実現。</li>
+                    <li><span class="tag tag-new">New</span> <strong>バージョン自動検知:</strong> Mod内の <code>pack.mcmeta</code>
+                        を解析し、最適なパックフォーマットを自動設定。</li>
+                </ul>
+            </div>
+
+            <!-- Version 1.0 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v1.0</span>
+                    <span class="release-desc">Initial Release</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>基本機能:</strong>
+                        Modからの言語ファイル抽出、Google翻訳、リソースパック生成、キャッシュ機能。</li>
+                    <li><span class="tag tag-new">New</span> <strong>環境構築:</strong> <code>start.bat</code>
+                        によるPython仮想環境(venv)の自動構築。</li>
+                </ul>
+            </div>
+
+        </div>
+
+        <footer>
+            Created by 賢狼 (Wise Wolf) with Gemini
+        </footer>
+    </div>
+</body>
+
+</html>
