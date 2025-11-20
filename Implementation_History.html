@@ -154,10 +154,60 @@
 
         <div class="timeline">
 
+            <!-- Version 3.7 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.7 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Gemini 2.5 Preview & Gemma 3 Integration</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>最新モデル対応:</strong>
+                        <code>gemini-2.5-flash-lite-preview-09-2025</code> および
+                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。</li>
+                    <li><span class="tag tag-new">New</span> <strong>Gemma 3 サポート:</strong> Google API経由で利用可能な
+                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>優先順位の最適化:</strong> 最新のLiteモデルとGemma
+                        3を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.6 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.6</span>
+                    <span class="release-desc">Shader Support & Path Fixes</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>シェーダーパック翻訳対応:</strong> <code>.lang</code>
+                        ファイル（key=value形式）の読み書きに対応し、シェーダーパックの翻訳が可能になった。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>モード自動切替:</strong>
+                        入力フォルダ名に「shader」が含まれる場合、自動的にシェーダー翻訳モードに切り替わり、出力構造やフォーマットが最適化される。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>出力パス修正:</strong>
+                        シェーダーモード時は、ModのようなIDごとの分類ではなく、zip内のディレクトリ構造を維持して出力するように修正。</li>
+                </ul>
+            </div>
+
+            <!-- Version 3.5 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.5</span>
+                    <span class="release-desc">Enhanced Cleaning & Re-translation</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>出力ファイル浄化機能:</strong> ツール起動時に、すでに出力された
+                        <code>ja_jp.json</code> を全スキャンし、「Error 504」などのエラー文字列が含まれるエントリを物理的に削除する機能を追加。
+                    </li>
+                    <li><span class="tag tag-update">Update</span> <strong>再翻訳トリガー:</strong>
+                        出力ファイルから削除された（またはエラーが含まれる）エントリは、次回の実行時に自動的に再翻訳対象となるようロジックを強化。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>最終防衛ライン:</strong>
+                        翻訳結果をファイルに書き込む直前にも再チェックを行い、エラー文字列が含まれる場合は原文（英語）に戻して保存するように変更。</li>
+                </ul>
+            </div>
+
             <!-- Version 3.4 -->
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.4 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.4</span>
                     <span class="release-desc">Lite Strategy & Self-Healing</span>
                 </div>
                 <ul>
@@ -215,7 +265,8 @@
                     <li><span class="tag tag-update">Update</span> <strong>探索ロジックの適正化:</strong>
                         再帰探索（サブフォルダ探索）を廃止し、ユーザーの期待値に近い「直下フォルダのみ」の探索に戻した。</li>
                     <li><span class="tag tag-fix">Fix</span> <strong>Mod認識修正:</strong> <code>.jar</code> に加えて
-                        <code>.zip</code> 形式のファイルも正しく認識するように修正。</li>
+                        <code>.zip</code> 形式のファイルも正しく認識するように修正。
+                    </li>
                 </ul>
             </div>
 

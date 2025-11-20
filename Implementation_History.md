@@ -2,7 +2,25 @@
 
 Minecraft Mod Auto Translator (AI Powered)
 
-**v3.4** (Latest)**Lite Strategy & Self-Healing**
+**v3.7** (Latest)**Gemini 2.5 Preview & Gemma 3 Integration**
+
+- **New** **最新モデル対応:** `gemini-2.5-flash-lite-preview-09-2025` および `gemini-2.0-flash-lite-preview-02-05` を優先リストに追加。
+- **New** **Gemma 3 サポート:** Google API 経由で利用可能な `gemma-3` シリーズ（1b ～ 27b）および `gemma-3n` 系モデルを自動選択ロジックに統合。
+- **Update** **優先順位の最適化:** 最新の Lite モデルと Gemma 3 を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。
+
+**v3.6**Shader Support & Path Fixes
+
+- **New** **シェーダーパック翻訳対応:** `.lang` ファイル（key=value 形式）の読み書きに対応し、シェーダーパックの翻訳が可能になった。
+- **Update** **モード自動切替:** 入力フォルダ名に「shader」が含まれる場合、自動的にシェーダー翻訳モードに切り替わり、出力構造やフォーマットが最適化される。
+- **Fix** **出力パス修正:** シェーダーモード時は、Mod のような ID ごとの分類ではなく、zip 内のディレクトリ構造を維持して出力するように修正。
+
+**v3.5**Enhanced Cleaning & Re-translation
+
+- **New** **出力ファイル浄化機能:** ツール起動時に、すでに出力された `ja_jp.json` を全スキャンし、「Error 504」などのエラー文字列が含まれるエントリを物理的に削除する機能を追加。
+- **Update** **再翻訳トリガー:** 出力ファイルから削除された（またはエラーが含まれる）エントリは、次回の実行時に自動的に再翻訳対象となるようロジックを強化。
+- **Update** **最終防衛ライン:** 翻訳結果をファイルに書き込む直前にも再チェックを行い、エラー文字列が含まれる場合は原文（英語）に戻して保存するように変更。
+
+**v3.4**Lite Strategy & Self-Healing
 
 - **New** **Lite 限定モード:** `--lite-only` オプションを追加。レート制限対策として、軽量モデルのみに限定して動作させる機能。
 - **New** **自動修復機能 (Self-Healing):** 起動時に出力済みファイル（`ja_jp.json`）とキャッシュを全スキャンし、「Error 504」などの汚染データを物理的に削除して再翻訳対象にする機能。
