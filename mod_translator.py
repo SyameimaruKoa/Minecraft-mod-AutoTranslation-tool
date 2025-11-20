@@ -10,15 +10,53 @@ CACHE_FILENAME = "trans_cache.json"
 PROGRESS_FILENAME = "progress_log.json"
 DEFAULT_FORMAT_FALLBACK = 34
 BATCH_SIZE = 10
+REQUEST_INTERVAL = 5.0
 
-# API制限対策: リクエスト間の待機時間
-REQUEST_INTERVAL = 5.0 
-
-# エラー判定用ワード
 ERROR_KEYWORDS = [
-    "Error 504", "Server Error", "That’s an error", 
+    "Error 504", "Server Error", "That’s an error",
     "429 Too Many Requests", "MYMEMORY WARNING",
     "Error 502", "Bad Gateway"
+]
+
+# デフォルトの優先順位（RPD > TPM > RPM の順）
+# ユーザー要望により 2.0 Lite を Gemma より優先し、Pro を除外
+DEFAULT_PRIORITY = [
+    # 1. Gemini 2.5 Lite (RPD 1,000 - 最優先主力)
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-lite-preview-09-2025",
+
+    # 2. Gemini 2.0 Lite (RPD 200 / RPM 30 - 高速サブ)
+    # Gemmaより先にこちらを使って速度を稼ぐ
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite-001",
+    "gemini-2.0-flash-lite-preview",
+    "gemini-2.0-flash-lite-preview-02-05",
+
+    # 3. Gemma 3n/3系 (RPD 14,400 - 鉄壁のスタミナ)
+    # Lite系が尽きた後の長期戦用
+    "gemma-3n-e2b-it",
+    "gemma-3n-e4b-it",
+    "gemma-3-27b-it",
+    "gemma-3-12b-it",
+    "gemma-3-8b-it",
+    "gemma-3-4b-it",
+    "gemma-3-1b-it",
+
+    # # 4. Gemini 2.5 Flash (RPD 250 - 標準枠)
+    # "gemini-2.5-flash-preview-09-2025",
+    # "gemini-2.5-flash",
+
+    # # 5. Gemini 2.0 Flash Exp (Proは除外済み)
+    # "gemini-2.0-flash-exp",
+    # "gemini-2.0-flash",
+    # "gemini-2.0-flash-001",
+
+    # 6. 旧世代・その他 (予備)
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-flash-002",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest"
 ]
 
 # ==========================================
@@ -79,20 +117,12 @@ def translate_google_single(text, translator, cache):
     except:
         return text
 
-# --- JSON抽出用ヘルパー ---
 def extract_json_from_response(text):
-    """
-    モデルの出力からJSONブロックだけを正規表現で抜き出す
-    <think>タグやMarkdown記法が含まれていても対応可能にする
-    """
     try:
-        # 最も外側の {} を探す (DOTALLで改行も含める)
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             json_str = match.group(0)
             return json.loads(json_str)
-        
-        # 正規表現で見つからない場合、従来のクリーニングを試す
         cleaned = text.replace("```json", "").replace("```", "").strip()
         return json.loads(cleaned)
     except:
@@ -100,7 +130,7 @@ def extract_json_from_response(text):
 
 # --- Gemini API ---
 def get_available_models(api_key):
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models?key=](https://generativelanguage.googleapis.com/v1beta/models?key=){api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code != 200: return []
@@ -114,7 +144,7 @@ def get_available_models(api_key):
     except: return []
 
 def call_gemini_rest(model_name, api_key, prompt):
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -147,7 +177,7 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
             
             while True:
                 if current_model_idx >= len(models_list):
-                    batch_pbar.write("    [Wait] All models busy. Cooling down for 60s...")
+                    batch_pbar.write("    [Wait] All selected models busy. Cooling down for 60s...")
                     time.sleep(60)
                     current_model_idx = 0 
                     batch_pbar.write("    [Resume] Retrying...")
@@ -159,7 +189,6 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
                 
                 if status_code == 200 and result_json and 'candidates' in result_json:
                     raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
-                    # ここで抽出関数を使う
                     translated_batch = extract_json_from_response(raw_text)
                     
                     if translated_batch:
@@ -173,12 +202,10 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
                         batch_pbar.write(f"    [Warn] {active_model} invalid JSON structure. Switching...")
                         current_model_idx += 1
                         time.sleep(1)
-                
                 elif status_code == 429:
                     batch_pbar.write(f"    [Limit] {active_model} (429). Switching...")
                     current_model_idx += 1
                     time.sleep(1)
-
                 else:
                     batch_pbar.write(f"    [Error {status_code}] {active_model} failed. Switching...")
                     current_model_idx += 1
@@ -186,9 +213,7 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
             
             if not batch_success:
                 return False
-            
             batch_pbar.update(1)
-
     return True
 
 # --- LM Studio ---
@@ -207,7 +232,6 @@ def call_lmstudio_rest(prompt):
         "stream": False
     }
     try:
-        # LM Studioは遅い場合があるので少し長めに待つが、タイムアウトしたら諦める
         response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200: return None
         return response.json()
@@ -228,21 +252,16 @@ def translate_lmstudio_batch(key_value_dict, cache):
             result = call_lmstudio_rest(prompt)
             if result and 'choices' in result:
                 raw_text = result['choices'][0]['message']['content']
-                
-                # ここで抽出関数を使う（<think>タグ対策）
                 translated_batch = extract_json_from_response(raw_text)
-                
                 if translated_batch:
                     for k, original_v in batch.items():
                         if k in translated_batch and is_valid_translation(translated_batch[k]):
                             cache[original_v] = translated_batch[k]
                 else:
-                    # 失敗した内容を少し表示してデバッグしやすくする
                     sample = raw_text[:50].replace('\n', ' ')
                     batch_pbar.write(f" [Warn] LM Studio JSON parse failed. Start with: {sample}...")
             else:
                 batch_pbar.write(" [Warn] No response from LM Studio.")
-            
             batch_pbar.update(1)
     return True
 
@@ -317,10 +336,18 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models
         return True
     except: return False
 
-def select_gemini_models(api_key, manual_mode=False):
+def select_gemini_models(api_key, manual_mode=False, priority_str=None, lite_only=False):
     print("Fetching available models from Google API...")
     models = get_available_models(api_key)
-    if not models: return None
+    
+    print("\n[INFO] Available Models on API:")
+    for m in models:
+        print(f" - {m}")
+    print("")
+
+    if not models:
+        print("[ERROR] No accessible models found. Check your API Key.")
+        return None
     
     if manual_mode:
         for i, m in enumerate(models): print(f"  [{i+1}] {m}")
@@ -330,32 +357,54 @@ def select_gemini_models(api_key, manual_mode=False):
         except: pass
     
     selected_models = []
-    lite_candidates = [m for m in models if "lite" in m.lower()]
     
-    if lite_candidates:
-        priority_lite = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite"]
-        for p in priority_lite:
+    if priority_str:
+        user_priority = [p.strip() for p in priority_str.split(',')]
+        print(f"[INFO] Using User Custom Priority: {user_priority}")
+        for p in user_priority:
             if p in models:
                 selected_models.append(p)
-        for m in lite_candidates:
-            if m not in selected_models:
-                selected_models.append(m)
-        print(f"\n[INFO] Lite Mode Active: Restricting fallbacks to {len(selected_models)} Lite models.")
+            else:
+                print(f" [Warn] Custom model '{p}' not found in API list. Skipping.")
     else:
-        priority_order = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-8b"]
-        for p in priority_order:
-            if p in models: selected_models.append(p)
+        for p in DEFAULT_PRIORITY:
+            if p in models:
+                selected_models.append(p)
+    
+    if not lite_only:
         for m in models:
-            if m not in selected_models and "flash" in m: selected_models.append(m)
+            if m not in selected_models and "flash" in m:
+                # Proモデルは自動追加しないように除外 (user request)
+                if "pro" not in m.lower():
+                    selected_models.append(m)
 
-    if not selected_models and models: selected_models = [models[0]]
+    if lite_only:
+        print("[INFO] 'Lite Only' mode ENABLED. Filtering non-lite models...")
+        filtered = [m for m in selected_models if "lite" in m.lower()]
+        if not filtered:
+            print(" [Warn] No Lite models found in current selection. Searching available models...")
+            filtered = [m for m in models if "lite" in m.lower()]
         
-    print(f"[INFO] Model Priority: {' -> '.join(selected_models[:3])} ...\n")
+        selected_models = filtered
+        
+        if not selected_models:
+            print("[ERROR] Lite-Only mode is on, but no 'lite' models are available via API.")
+            return None
+
+    if not selected_models and models:
+        # 最後の手段でもProは避ける努力をする
+        non_pro = [m for m in models if "pro" not in m.lower()]
+        if non_pro:
+             selected_models = [non_pro[0]]
+        else:
+             selected_models = [models[0]]
+        
+    print(f"[INFO] Final Model Priority: {' -> '.join(selected_models)}")
     return selected_models
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", required=True)
+    parser.add_argument("-i", "--input", required=False)
     parser.add_argument("-o", "--output", default="Output_Pack")
     parser.add_argument("-f", "--format", type=int, default=-1)
     parser.add_argument("--force", action="store_true")
@@ -364,19 +413,60 @@ def main():
     parser.add_argument("--key", help="Gemini API Key", default="")
     parser.add_argument("--model", help="Ollama model", default="gemma2:9b")
     parser.add_argument("--manual-model", action="store_true")
+    
+    parser.add_argument("--priority", help="Comma separated model list", default=None)
+    parser.add_argument("--lite-only", action="store_true", help="Strictly use only models with 'lite' in their name.")
+
     try: args = parser.parse_args()
     except: sys.exit(1)
     
+    if not args.input:
+        parser.print_help()
+        print("\n" + "="*50)
+        print(" [Model Checker]")
+        print(" To list currently available Gemini models,")
+        print(" an API Key is required.")
+        print("="*50)
+        
+        api_key = args.key
+        if not api_key:
+            try:
+                api_key = input("Enter Gemini API Key (Press Enter to skip): ").strip()
+            except:
+                pass
+        
+        if api_key:
+            print("\nFetching available models...")
+            models = get_available_models(api_key)
+            if models:
+                print("\n[Available Models on Gemini API]")
+                for m in models:
+                    print(f" - {m}")
+            else:
+                print("\n[Error] Could not fetch models (Invalid Key or Network Error).")
+        else:
+            print("Skipped model check.")
+        
+        sys.exit(0)
+    
     active_models_list = None
     if args.engine == "gemini":
-        if not args.key: sys.exit(1)
-        active_models_list = select_gemini_models(args.key, args.manual_model)
+        if not args.key:
+             print("Error: --key is required for Gemini engine.")
+             sys.exit(1)
+        active_models_list = select_gemini_models(args.key, args.manual_model, args.priority, args.lite_only)
+        if not active_models_list:
+            sys.exit(1)
+            
     elif args.engine == "lmstudio":
         print("[INFO] Using LM Studio. Ensure Server is running at port 1234.")
     elif args.engine == "ollama":
         active_models_list = [args.model]
         
-    if not os.path.exists(args.input): sys.exit(1)
+    if not os.path.exists(args.input):
+        print(f"Error: Input directory '{args.input}' not found.")
+        sys.exit(1)
+
     all_files = os.listdir(args.input)
     all_jars = [f for f in all_files if f.lower().endswith((".jar", ".zip"))]
     full_jar_paths = [os.path.join(args.input, f) for f in all_jars]
