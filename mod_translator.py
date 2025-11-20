@@ -41,14 +41,14 @@ DEFAULT_PRIORITY = [
     "gemma-3-4b-it",
     "gemma-3-1b-it",
 
-    # # 4. Gemini 2.5 Flash (RPD 250 - 標準枠)
-    # "gemini-2.5-flash-preview-09-2025",
-    # "gemini-2.5-flash",
+    # 4. Gemini 2.5 Flash (RPD 250 - 標準枠)
+    "gemini-2.5-flash-preview-09-2025",
+    "gemini-2.5-flash",
 
-    # # 5. Gemini 2.0 Flash Exp (Proは除外済み)
-    # "gemini-2.0-flash-exp",
-    # "gemini-2.0-flash",
-    # "gemini-2.0-flash-001",
+    # 5. Gemini 2.0 Flash Exp (Proは除外済み)
+    "gemini-2.0-flash-exp",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
 
     # 6. 旧世代・その他 (予備)
     "gemini-1.5-flash",
@@ -58,13 +58,13 @@ DEFAULT_PRIORITY = [
     "gemini-flash-latest"
 ]
 
-# 翻訳除外キー
+# 翻訳除外キー（これらは翻訳しない）
 IGNORE_KEYS = [
     "pack.mcmeta", "pack.description", "_comment", 
     "language.name", "language.region", "language.code"
 ]
 
-# エラー検出用キーワード
+# エラー検出用キーワード（これらが含まれていたら翻訳失敗とみなして削除・再翻訳する）
 ERROR_KEYWORDS = [
     "Error 504", "HTTP 429", "Model overloaded", "Internal Server Error",
     "quota exceeded", "Too Many Requests", "Service Unavailable"
@@ -183,6 +183,7 @@ def load_json(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
+        print(f"警告: JSON読み込みエラー {filepath}: {e}")
         return {}
 
 def save_json(filepath, data):
@@ -213,7 +214,7 @@ def clean_cache(cache_data):
         cleaned_count += 1
     
     if cleaned_count > 0:
-        print(f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。")
+        print(f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。これらは再翻訳されます。")
     return cache_data
 
 def format_time(seconds):
@@ -256,6 +257,7 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                 elif file.endswith(".lang") or (is_shader_mode and file.endswith("en_US.lang")):
                     with zf.open(file) as f:
                         try:
+                            # key=value 形式をパース
                             content = {}
                             for line in f.read().decode('utf-8', errors='ignore').splitlines():
                                 line = line.strip()
@@ -275,14 +277,16 @@ def extract_lang_files(mod_path, is_shader_mode=False):
 def translate_google_batch(text_list):
     """Google翻訳 (Deep Translator) を使用"""
     try:
+        # Google翻訳は文字数制限があるため、適度に分割が必要だが
+        # deep_translatorは内部である程度よしなにやってくれる
         translator = GoogleTranslator(source='auto', target='ja')
         return translator.translate_batch(text_list)
     except Exception as e:
         print(f"Google翻訳エラー: {e}")
-        return text_list
+        return text_list # 失敗時は原文を返す
 
 def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
-    """Gemini APIを使用した翻訳（動的バッチサイズ対応）"""
+    """Gemini APIを使用した翻訳（動的バッチサイズ・進捗表示対応）"""
     if not text_dict:
         return {}
     
@@ -297,10 +301,12 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
     processed = 0
     start_time = time.time() # 測定開始
 
+    # バッチ処理ループ
     for i in range(0, total, batch_size):
         batch_keys = keys[i : i + batch_size]
         batch_dict = {k: text_dict[k] for k in batch_keys}
         
+        # プロンプト作成
         prompt = (
             "あなたはMinecraftのMod翻訳の専門家です。以下のJSONオブジェクトの値を日本語に翻訳してください。\n"
             "Minecraft特有の用語（Redstone, Mobなど）は文脈に合わせて適切に訳してください。\n"
@@ -309,6 +315,7 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
             f"{json.dumps(batch_dict, ensure_ascii=False)}"
         )
 
+        # リトライロジック
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -327,7 +334,7 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
                         content_text = result_json["candidates"][0]["content"]["parts"][0]["text"]
                         translated_batch = json.loads(content_text)
                         translated_results.update(translated_batch)
-                        break
+                        break # 成功
                     except (KeyError, json.JSONDecodeError) as e:
                         print(f"警告: Gemini応答の解析失敗 (試行 {attempt+1}): {e}")
                 
@@ -367,7 +374,6 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
         # プログレスバー表示
         # \r を使って同じ行を更新したいところだが、ログが見えなくなるので改行する
         print(f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str}")
-        
         time.sleep(interval)
 
     return translated_results
@@ -394,7 +400,7 @@ def translate_local_llm(text_dict, engine, model_name):
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "format": "json"
+                "format": "json" # Ollama supports json format enforcement
             }
             
             response = requests.post(url, json=payload, timeout=120)
@@ -417,7 +423,7 @@ def translate_local_llm(text_dict, engine, model_name):
 
         except Exception as e:
             print(f"ローカルLLM通信エラー: {e}")
-            
+        
         processed += len(batch_keys)
         elapsed_time = time.time() - start_time
         if processed > 0:
@@ -457,7 +463,7 @@ class ModTranslator:
         # モデルの決定（Geminiの場合）
         if self.engine == "gemini":
             if not self.model_name:
-                # APIを使って優先リストから最適なモデルを選択
+                # 指定がない場合は自動探索
                 if self.api_key:
                     self.model_name = select_best_model(self.api_key, self.lite_only)
                 else:
@@ -477,14 +483,17 @@ class ModTranslator:
             file_path = os.path.join(self.input_dir, filename)
             print(f"\n[{idx+1}/{total_files}] 処理中: {filename}")
             
+            # 言語ファイル抽出
             lang_files = extract_lang_files(file_path, self.is_shader_mode)
             if not lang_files:
                 print("  -> 言語ファイルが見つかりませんでした。スキップ。")
                 continue
             
+            # バージョン検知
             pack_format = detect_pack_format(file_path)
             
             for lang_path, content in lang_files.items():
+                # 翻訳が必要な項目を抽出（キャッシュにあるものはスキップ）
                 to_translate = {}
                 for k, v in content.items():
                     if k in IGNORE_KEYS or not isinstance(v, str):
@@ -499,16 +508,19 @@ class ModTranslator:
                 else:
                     print(f"  -> 翻訳対象: {len(to_translate)} 項目")
                     
+                    # 翻訳実行
                     new_translations = {}
                     if self.engine == "google":
                         keys = list(to_translate.keys())
                         values = list(to_translate.values())
                         translated_values = translate_google_batch(values)
                         for k, tv in zip(keys, translated_values):
-                            new_translations[to_translate[k]] = tv
+                            new_translations[to_translate[k]] = tv # 原文->訳文でキャッシュ
                     
                     elif self.engine == "gemini":
+                        # AIには key: value のペアで渡して翻訳させる
                         new_translations_raw = translate_with_gemini(to_translate, self.api_key, self.model_name, self.lite_only)
+                        # キャッシュ形式に変換 (原文 -> 訳文)
                         for k, v in new_translations_raw.items():
                             original_text = content.get(k)
                             if original_text:
@@ -521,30 +533,52 @@ class ModTranslator:
                             if original_text:
                                 new_translations[original_text] = v
                     
+                    # キャッシュ更新と保存
                     self.cache.update(new_translations)
                     save_json(self.cache_file, self.cache)
                     
+                    # 最終的な辞書作成
                     translated_data = content.copy()
                     for k, v in content.items():
                         if isinstance(v, str) and v in self.cache:
                             translated_data[k] = self.cache[v]
 
+                # 出力ファイルの書き出し
                 self.write_output(filename, lang_path, translated_data, pack_format)
 
     def write_output(self, original_filename, lang_internal_path, data, pack_format):
         """リソースパックとしてファイルを書き出す"""
+        # Mod名（拡張子除く）をフォルダ名とする
         mod_name = os.path.splitext(original_filename)[0]
         
         if self.is_shader_mode:
-            out_path = os.path.join(self.output_dir, mod_name, lang_internal_path)
+            # シェーダーの場合: ファイル名を ja_JP.lang 等に強制変更
+            dirname = os.path.dirname(lang_internal_path)
+            filename = os.path.basename(lang_internal_path)
+            
+            # 拡張子に応じて強制リネーム
+            if filename.lower().endswith(".json"):
+                new_filename = "ja_jp.json"
+            elif filename.lower().endswith(".lang"):
+                new_filename = "ja_JP.lang"
+            else:
+                # 万が一その他の形式なら、とりあえず ja_JP を付与しておく
+                base, ext = os.path.splitext(filename)
+                new_filename = f"ja_JP{ext}"
+
+            out_path = os.path.join(self.output_dir, mod_name, dirname, new_filename)
+            
         else:
+            # 通常Modの場合は assets/modid/lang/ja_jp.json
             path_parts = lang_internal_path.replace("\\", "/").split("/")
             if "assets" in path_parts:
                 idx = path_parts.index("assets")
+                # assets/modid/lang/
                 base_parts = path_parts[idx:-1] 
                 dest_dir = os.path.join(self.output_dir, *base_parts)
                 out_path = os.path.join(dest_dir, "ja_jp.json")
                 
+                # mcmetaの作成
                 mcmeta_path = os.path.join(self.output_dir, "pack.mcmeta")
                 if not os.path.exists(mcmeta_path):
                     meta = {
@@ -555,20 +589,24 @@ class ModTranslator:
                     }
                     save_json(mcmeta_path, meta)
             else:
-                return
+                return # パス構造が不明ならスキップ
 
+        # 最終チェック: エラー文字列が含まれていたら保存しない
         final_data = {}
         for k, v in data.items():
             if is_valid_translation(k, v):
                 final_data[k] = v
             else:
+                # エラーが含まれる場合は翻訳されなかったものとして扱う
                 pass
 
+        # 保存処理
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         
         if out_path.endswith(".json"):
             save_json(out_path, data)
         else:
+            # .lang 形式で保存
             with open(out_path, 'w', encoding='utf-8') as f:
                 for k, v in data.items():
                     f.write(f"{k}={v}\n")
