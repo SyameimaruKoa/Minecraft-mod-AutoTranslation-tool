@@ -99,34 +99,63 @@ def call_gemini_rest(model_name, api_key, prompt):
         "generationConfig": {"response_mime_type": "application/json"}
     }
     try:
+        # レート制限時は429が返るため、ステータスコードをチェック
         response = requests.post(url, headers=headers, json=data, timeout=30)
-        if response.status_code != 200: return None
+        if response.status_code != 200:
+            # エラー詳細をデバッグ用に表示しても良いが、ここではNoneを返して次へ
+            return None
         return response.json()
     except: return None
 
-def translate_gemini_batch_rest(key_value_dict, model_name, api_key, cache):
+def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
+    """
+    models_list: 利用可能なモデルのリスト（優先順）
+    エラーが出たら次のモデルにスイッチする
+    """
     to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
     if not to_translate: return True
     items = list(to_translate.items())
+    
+    # 現在使用中のモデルインデックス（最初は0=最優先モデル）
+    current_model_idx = 0
+    
     for i in range(0, len(items), BATCH_SIZE):
         batch = dict(items[i : i + BATCH_SIZE])
         input_text = json.dumps(batch, ensure_ascii=False)
         prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
-        result_json = call_gemini_rest(model_name, api_key, prompt)
-        if result_json and 'candidates' in result_json:
-            try:
-                raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
-                translated_batch = json.loads(raw_text)
-                for k, original_v in batch.items():
-                    if k in translated_batch and is_valid_translation(translated_batch[k]):
-                        cache[original_v] = translated_batch[k]
-                time.sleep(1.0)
-            except:
-                time.sleep(2)
-                return False
-        else:
-            time.sleep(2)
+        
+        batch_success = False
+        
+        # 成功するまでモデルを切り替えてリトライ
+        while current_model_idx < len(models_list):
+            active_model = models_list[current_model_idx]
+            result_json = call_gemini_rest(active_model, api_key, prompt)
+            
+            if result_json and 'candidates' in result_json:
+                try:
+                    raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
+                    translated_batch = json.loads(raw_text)
+                    for k, original_v in batch.items():
+                        if k in translated_batch and is_valid_translation(translated_batch[k]):
+                            cache[original_v] = translated_batch[k]
+                    time.sleep(1.0)
+                    batch_success = True
+                    break # バッチ処理成功、次のバッチへ
+                except:
+                    # JSONパースエラー等はモデルのせいではないかもしれないが、念のため次へ
+                    print(f" [Warn] Model {active_model} output invalid JSON. Switching...")
+                    current_model_idx += 1
+                    time.sleep(1)
+            else:
+                # レート制限(429)やAPIエラーの場合
+                print(f" [Warn] Model {active_model} limit/error. Switching to next model...")
+                current_model_idx += 1
+                time.sleep(1)
+        
+        if not batch_success:
+            print(" [Error] All available Gemini models failed or rate limited.")
             return False
+
     return True
 
 # --- LM Studio ---
@@ -197,7 +226,10 @@ def detect_pack_format(jar_paths):
     if not formats: return DEFAULT_FORMAT_FALLBACK
     return collections.Counter(formats).most_common(1)[0][0]
 
-def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_model=None, force=False):
+def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models_list=None, force=False):
+    """
+    active_models_list: Geminiの場合、モデル名のリストを受け取る
+    """
     try:
         with zipfile.ZipFile(jar_path, 'r') as z:
             all_files = z.namelist()
@@ -232,10 +264,13 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_model=
                 if not keys_to_translate: continue
                 target_dir = os.path.join(output_dir, "assets", mod_id, "lang")
                 os.makedirs(target_dir, exist_ok=True)
-                if engine == "gemini" and active_model:
-                    translate_gemini_batch_rest(keys_to_translate, active_model, api_key, cache)
+                
+                if engine == "gemini" and active_models_list:
+                    # リストを渡す
+                    translate_gemini_batch_rest(keys_to_translate, active_models_list, api_key, cache)
                 elif engine == "lmstudio":
                     translate_lmstudio_batch(keys_to_translate, cache)
+                
                 for k, v in keys_to_translate.items():
                     if v in cache: final_data[k] = cache[v]
                     else: final_data[k] = translate_google_single(v, translator_google, cache)
@@ -244,25 +279,45 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_model=
         return True
     except: return False
 
-def select_gemini_model(api_key, manual_mode=False):
+def select_gemini_models(api_key, manual_mode=False):
+    """
+    利用可能なモデルのリストを優先順に返す
+    """
     print("Fetching available models from Google API...")
     models = get_available_models(api_key)
     if not models: return None
+    
     if manual_mode:
         for i, m in enumerate(models): print(f"  [{i+1}] {m}")
         try:
             idx = int(input(f"Select (1-{len(models)}) > ")) - 1
-            if 0 <= idx < len(models): return models[idx]
+            if 0 <= idx < len(models): return [models[idx]]
         except: pass
     
-    # 自動選択ロジック（優先順）
-    for p in ["gemini-2.0-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash"]:
+    # 優先順位リスト（ユーザー指定の2.5-flash-liteを含む）
+    priority_order = [
+        "gemini-2.0-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-flash"
+    ]
+    
+    # 利用可能なモデルの中から、優先順位リストにあるものを抽出
+    selected_models = []
+    for p in priority_order:
         if p in models:
-            print(f"\n[INFO] Auto-Selected Model: {p}\n")
-            return p
+            selected_models.append(p)
+    
+    # 優先リストにないものも、予備として末尾に追加しておく（重複除外）
+    for m in models:
+        if m not in selected_models and "flash" in m:
+            selected_models.append(m)
             
-    print(f"\n[INFO] Auto-Selected Model: {models[0]}\n")
-    return models[0]
+    if not selected_models and models:
+        selected_models = [models[0]]
+        
+    print(f"\n[INFO] Model Priority: {' -> '.join(selected_models[:3])} ...\n")
+    return selected_models
 
 def main():
     parser = argparse.ArgumentParser()
@@ -277,14 +332,17 @@ def main():
     parser.add_argument("--manual-model", action="store_true")
     try: args = parser.parse_args()
     except: sys.exit(1)
-    active_model = None
+    
+    active_models_list = None
     if args.engine == "gemini":
         if not args.key: sys.exit(1)
-        active_model = select_gemini_model(args.key, args.manual_model)
+        active_models_list = select_gemini_models(args.key, args.manual_model)
     elif args.engine == "lmstudio":
         print("[INFO] Using LM Studio. Ensure Server is running at port 1234.")
     elif args.engine == "ollama":
-        active_model = args.model
+        # Ollamaはまだ単一モデル対応のみだが、必要なら拡張可能
+        active_models_list = [args.model]
+        
     if not os.path.exists(args.input): sys.exit(1)
     all_files = os.listdir(args.input)
     all_jars = [f for f in all_files if f.lower().endswith((".jar", ".zip"))]
@@ -303,20 +361,17 @@ def main():
     processed = load_json(progress_file_path, list)
     target_jars = [p for p in full_jar_paths if os.path.basename(p) not in processed]
     
-    # 絶対パスを取得して表示（ここを修正）
     abs_output_path = os.path.abspath(args.output)
     print(f"\n[Project Info]")
     print(f"  Output Dir: {abs_output_path}")
     print(f"  Cache File: {os.path.join(abs_output_path, CACHE_FILENAME)}")
     print(f"  Remaining : {len(target_jars)} jars")
     
-    if active_model and args.engine == "gemini":
-        print(f"  Active Engine: Gemini ({active_model})")
     with tqdm(total=len(target_jars), unit="mod", dynamic_ncols=True) as pbar:
         for jar_path in target_jars:
             jar_name = os.path.basename(jar_path)
             pbar.set_description(f"{jar_name[:20]}...")
-            process_jar(jar_path, args.output, cache, args.engine, args.key, active_model, args.force)
+            process_jar(jar_path, args.output, cache, args.engine, args.key, active_models_list, args.force)
             processed.append(jar_name)
             save_json(progress_file_path, processed)
             save_json(cache_file_path, cache)
