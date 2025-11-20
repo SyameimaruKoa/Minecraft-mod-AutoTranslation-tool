@@ -1,34 +1,60 @@
 import os, sys, json, zipfile, argparse, time, collections
-from concurrent.futures import ThreadPoolExecutor
+import requests
 from tqdm import tqdm
 from deep_translator import GoogleTranslator
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # ==========================================
 # 設定・定数
 # ==========================================
-CACHE_FILE = "trans_cache.json"
-PROGRESS_FILE = "progress_log.json"
-DEFAULT_FORMAT_FALLBACK = 34  # 1.21.x
-BATCH_SIZE = 40  # Geminiに一度に投げる行数
+CACHE_FILENAME = "trans_cache.json"
+PROGRESS_FILENAME = "progress_log.json"
+DEFAULT_FORMAT_FALLBACK = 34
+BATCH_SIZE = 10
+
+# エラー判定用ワード
+ERROR_KEYWORDS = [
+    "Error 504", "Server Error", "That’s an error", 
+    "429 Too Many Requests", "MYMEMORY WARNING",
+    "Error 502", "Bad Gateway"
+]
 
 # ==========================================
 # 関数定義
 # ==========================================
 
-def load_json(filepath):
-    """JSON読み込み"""
+def is_valid_translation(text):
+    if not text: return True
+    text_str = str(text)
+    for kw in ERROR_KEYWORDS:
+        if kw in text_str: return False
+    return True
+
+def load_json(filepath, default_type=dict):
+    default_val = default_type()
     if os.path.exists(filepath):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict) and "trans_cache.json" in filepath:
+                clean_data = {}
+                dirty_count = 0
+                for k, v in data.items():
+                    if is_valid_translation(v):
+                        clean_data[k] = v
+                    else:
+                        dirty_count += 1
+                if dirty_count > 0:
+                    print(f" [Info] Cleaned {dirty_count} corrupted entries from cache.")
+                return clean_data
+            return data
         except:
-            return {}
-    return {}
+            return default_val
+    return default_val
 
 def save_json(filepath, data):
-    """JSON保存"""
+    parent_dir = os.path.dirname(filepath)
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -36,84 +62,120 @@ def get_translator_google():
     return GoogleTranslator(source='auto', target='ja')
 
 def translate_google_single(text, translator, cache):
-    """Google翻訳(従来版)"""
     if not text or str(text).strip() == "": return text
     if text in cache: return cache[text]
-    # 数字のみなどはスキップ
     if str(text).replace(".", "").isdigit(): return text
-
     try:
         res = translator.translate(text)
+        if not is_valid_translation(res):
+            time.sleep(1.0)
+            return text
         cache[text] = res
-        time.sleep(0.2) 
+        time.sleep(0.5)
         return res
     except:
         return text
 
-def translate_gemini_batch(key_value_dict, model, cache):
-    """Geminiによるバッチ翻訳"""
-    # キャッシュにあるものは除外
-    to_translate = {}
-    for k, v in key_value_dict.items():
-        if v in cache: continue
-        if not v or str(v).strip() == "": continue
-        if str(v).replace(".", "").isdigit(): continue
-        to_translate[k] = v
+# --- Gemini API ---
+def get_available_models(api_key):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code != 200: return []
+        data = res.json()
+        models = []
+        if 'models' in data:
+            for m in data['models']:
+                if 'generateContent' in m.get('supportedGenerationMethods', []):
+                    models.append(m['name'].replace('models/', ''))
+        return models
+    except: return []
 
-    if not to_translate:
-        return
+def call_gemini_rest(model_name, api_key, prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    headers = {'Content-Type': 'application/json'}
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"}
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        if response.status_code != 200: return None
+        return response.json()
+    except: return None
 
-    # バッチ分割して送信
+def translate_gemini_batch_rest(key_value_dict, model_name, api_key, cache):
+    to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
+    if not to_translate: return True
     items = list(to_translate.items())
-    
-    # プロンプト構築
-    # JSONであることを強調し、Minecraft特有の翻訳を指示
-    
     for i in range(0, len(items), BATCH_SIZE):
         batch = dict(items[i : i + BATCH_SIZE])
-        
-        # 入力テキスト作成
         input_text = json.dumps(batch, ensure_ascii=False)
-        
-        try:
-            # Geminiへの指示
-            prompt = f"""
-            You are a professional translator for Minecraft Mods.
-            Translate the values in the following JSON from English to Japanese.
-            
-            Rules:
-            1. Output MUST be valid JSON.
-            2. Maintain Minecraft terminology (e.g., "Chest" -> "チェスト", "Sneak" -> "スニーク").
-            3. Do NOT translate formatting codes like %s, %d, {{0}}, <br>.
-            4. Do not output markdown code blocks, just the raw JSON string.
-            
-            JSON to translate:
-            {input_text}
-            """
-
-            response = model.generate_content(
-                prompt,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            
-            translated_batch = json.loads(response.text)
-            
-            # キャッシュと結果に反映
-            # キーが一致するか確認しつつ保存
-            for k, original_v in batch.items():
-                if k in translated_batch:
-                    cache[original_v] = translated_batch[k]
-                else:
-                    # 失敗時は原文のまま（次回Google等で埋める余地を残す）
-                    pass
-            
-            time.sleep(1.5) # レート制限考慮 (Flashは早いが念のため)
-
-        except Exception as e:
-            # エラー時はコンソールに出すが処理は止めない
-            # print(f"  [Gemini Error] Batch failed: {e}")
+        prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
+        result_json = call_gemini_rest(model_name, api_key, prompt)
+        if result_json and 'candidates' in result_json:
+            try:
+                raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
+                translated_batch = json.loads(raw_text)
+                for k, original_v in batch.items():
+                    if k in translated_batch and is_valid_translation(translated_batch[k]):
+                        cache[original_v] = translated_batch[k]
+                time.sleep(1.0)
+            except:
+                time.sleep(2)
+                return False
+        else:
             time.sleep(2)
+            return False
+    return True
 
+# --- LM Studio ---
+def call_lmstudio_rest(prompt):
+    url = "http://localhost:1234/v1/chat/completions"
+    headers = {'Content-Type': 'application/json'}
+    messages = [
+        {"role": "system", "content": "You are a translator. Output only valid JSON. No markdown, no explanations."},
+        {"role": "user", "content": prompt}
+    ]
+    data = {
+        "model": "local-model",
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": -1,
+        "stream": False
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=600)
+        if response.status_code != 200: return None
+        return response.json()
+    except: return None
+
+def translate_lmstudio_batch(key_value_dict, cache):
+    to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
+    if not to_translate: return True
+    items = list(to_translate.items())
+    for i in range(0, len(items), BATCH_SIZE):
+        batch = dict(items[i : i + BATCH_SIZE])
+        input_text = json.dumps(batch, ensure_ascii=False)
+        prompt = f"""Translate the values in the following JSON to Japanese. Keys must remain unchanged. Output strictly valid JSON. Input: {input_text}"""
+        result = call_lmstudio_rest(prompt)
+        if result and 'choices' in result:
+            try:
+                raw_text = result['choices'][0]['message']['content']
+                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+                translated_batch = json.loads(raw_text)
+                for k, original_v in batch.items():
+                    if k in translated_batch and is_valid_translation(translated_batch[k]):
+                        cache[original_v] = translated_batch[k]
+            except:
+                print(" [Warn] LM Studio JSON parse failed, skipping block.")
+                return False
+        else:
+            print(" [Warn] No response from LM Studio.")
+            return False
+    return True
+
+# --- 共通処理 ---
 def find_ja_path(en_path):
     if "en_us.json" in en_path: return en_path.replace("en_us.json", "ja_jp.json")
     elif "en_US.json" in en_path: return en_path.replace("en_US.json", "ja_jp.json")
@@ -123,7 +185,6 @@ def detect_pack_format(jar_paths):
     formats = []
     print("Detecting pack format...")
     target_jars = jar_paths[:min(20, len(jar_paths))]
-    
     for jar_path in target_jars:
         try:
             with zipfile.ZipFile(jar_path, 'r') as z:
@@ -133,33 +194,25 @@ def detect_pack_format(jar_paths):
                         fmt = meta.get("pack", {}).get("pack_format")
                         if fmt: formats.append(fmt)
         except: continue
-    
     if not formats: return DEFAULT_FORMAT_FALLBACK
     return collections.Counter(formats).most_common(1)[0][0]
 
-def process_jar(jar_path, output_dir, cache, pbar, engine, model=None, force=False):
+def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_model=None, force=False):
     try:
         with zipfile.ZipFile(jar_path, 'r') as z:
             all_files = z.namelist()
             en_files = [f for f in all_files if f.lower().endswith("en_us.json")]
             if not en_files: return True
-
-            translator_google = None
-            if engine == "google":
-                translator_google = get_translator_google()
-
+            translator_google = get_translator_google()
             for en_file_path in en_files:
                 parts = en_file_path.split('/')
                 mod_id = "unknown"
                 if 'assets' in parts:
                     try: mod_id = parts[parts.index('assets') + 1]
                     except: pass
-
                 with z.open(en_file_path) as src:
                     try: en_data = json.load(src)
                     except: continue
-
-                # 既存日本語チェック
                 ja_file_path = find_ja_path(en_file_path)
                 final_data = {}
                 if ja_file_path in all_files:
@@ -167,151 +220,107 @@ def process_jar(jar_path, output_dir, cache, pbar, engine, model=None, force=Fal
                         with z.open(ja_file_path) as ja_src:
                             final_data = json.load(ja_src)
                     except: pass
-                
-                # 翻訳対象抽出
                 keys_to_translate = {}
                 for k, v in en_data.items():
                     should = False
                     if force: should = True
                     elif k not in final_data: should = True
-                    elif final_data[k] == v: should = True # 原文と同じなら未翻訳とみなす
-
+                    elif final_data[k] == v: should = True 
                     if should: keys_to_translate[k] = v
                     else:
                         if k not in final_data: final_data[k] = v
-
-                if not keys_to_translate:
-                    continue
-
-                # 翻訳実行
+                if not keys_to_translate: continue
                 target_dir = os.path.join(output_dir, "assets", mod_id, "lang")
                 os.makedirs(target_dir, exist_ok=True)
-
-                pbar.set_description(f"[{mod_id}] Translating ({engine})...")
-
-                if engine == "gemini" and model:
-                    # バッチで一括翻訳してキャッシュに入れる
-                    translate_gemini_batch(keys_to_translate, model, cache)
-                    
-                    # 結果を適用
-                    for k, v in keys_to_translate.items():
-                        if v in cache:
-                            final_data[k] = cache[v]
-                        else:
-                            # Gemini失敗時は原文維持
-                            final_data[k] = v
-                        pbar.update(1)
-                else:
-                    # Google翻訳 (逐次)
-                    for k, v in keys_to_translate.items():
-                        final_data[k] = translate_google_single(v, translator_google, cache)
-                        pbar.update(1)
-
+                if engine == "gemini" and active_model:
+                    translate_gemini_batch_rest(keys_to_translate, active_model, api_key, cache)
+                elif engine == "lmstudio":
+                    translate_lmstudio_batch(keys_to_translate, cache)
+                for k, v in keys_to_translate.items():
+                    if v in cache: final_data[k] = cache[v]
+                    else: final_data[k] = translate_google_single(v, translator_google, cache)
                 with open(os.path.join(target_dir, "ja_jp.json"), 'w', encoding='utf-8') as out:
                     json.dump(final_data, out, ensure_ascii=False, indent=4)
-
         return True
-    except Exception as e:
-        # print(f"Error processing {jar_path}: {e}")
-        return False
+    except: return False
 
-def show_help():
-    print("""
-Usage: python mod_translator.py [OPTIONS]
-
-Description:
-  Minecraft Mod Auto Translator (Gemini/Google)
-  Modの言語ファイル(en_us.json)を抽出し、日本語化リソースパックを生成します。
-
-Options:
-  -i, --input DIR     Mod folder path (Required)
-  -o, --output DIR    Output pack name (Default: Output_Pack)
-  -f, --format INT    pack.mcmeta format version (-1 = Auto Detect)
-  --engine STR        Translation engine: 'google' or 'gemini' (Default: google)
-  --key STR           Gemini API Key (Required if engine is gemini)
-  --force             Force translate all keys
-  --reset             Reset progress log
-  -h, --help          Show this help
-    """)
+def select_gemini_model(api_key, manual_mode=False):
+    print("Fetching available models from Google API...")
+    models = get_available_models(api_key)
+    if not models: return None
+    if manual_mode:
+        for i, m in enumerate(models): print(f"  [{i+1}] {m}")
+        try:
+            idx = int(input(f"Select (1-{len(models)}) > ")) - 1
+            if 0 <= idx < len(models): return models[idx]
+        except: pass
+    
+    # 自動選択ロジック（優先順）
+    for p in ["gemini-2.0-flash-lite", "gemini-2.0-flash-exp", "gemini-1.5-flash"]:
+        if p in models:
+            print(f"\n[INFO] Auto-Selected Model: {p}\n")
+            return p
+            
+    print(f"\n[INFO] Auto-Selected Model: {models[0]}\n")
+    return models[0]
 
 def main():
-    if "-h" in sys.argv or "--help" in sys.argv:
-        show_help()
-        sys.exit(0)
-
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", required=True)
     parser.add_argument("-o", "--output", default="Output_Pack")
     parser.add_argument("-f", "--format", type=int, default=-1)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--reset", action="store_true")
-    parser.add_argument("--engine", choices=["google", "gemini"], default="google")
+    parser.add_argument("--engine", choices=["google", "gemini", "lmstudio", "ollama"], default="google")
     parser.add_argument("--key", help="Gemini API Key", default="")
-    
-    try:
-        args = parser.parse_args()
-    except:
-        show_help()
-        sys.exit(1)
-
-    if args.engine == "gemini" and not args.key:
-        print("Error: Gemini engine requires --key")
-        sys.exit(1)
-
-    # Gemini初期化
-    gemini_model = None
+    parser.add_argument("--model", help="Ollama model", default="gemma2:9b")
+    parser.add_argument("--manual-model", action="store_true")
+    try: args = parser.parse_args()
+    except: sys.exit(1)
+    active_model = None
     if args.engine == "gemini":
-        try:
-            genai.configure(api_key=args.key)
-            gemini_model = genai.GenerativeModel(
-                "gemini-1.5-flash",
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
-            )
-            print("Gemini 1.5 Flash initialized.")
-        except Exception as e:
-            print(f"Failed to initialize Gemini: {e}")
-            sys.exit(1)
-
-    if not os.path.exists(args.input):
-        print("Input dir not found")
-        sys.exit(1)
-
-    all_jars = [f for f in os.listdir(args.input) if f.endswith(".jar")]
+        if not args.key: sys.exit(1)
+        active_model = select_gemini_model(args.key, args.manual_model)
+    elif args.engine == "lmstudio":
+        print("[INFO] Using LM Studio. Ensure Server is running at port 1234.")
+    elif args.engine == "ollama":
+        active_model = args.model
+    if not os.path.exists(args.input): sys.exit(1)
+    all_files = os.listdir(args.input)
+    all_jars = [f for f in all_files if f.lower().endswith((".jar", ".zip"))]
     full_jar_paths = [os.path.join(args.input, f) for f in all_jars]
-
-    # Pack Format
     fmt = args.format
-    if fmt == -1:
-        fmt = detect_pack_format(full_jar_paths) if all_jars else DEFAULT_FORMAT_FALLBACK
-    print(f"Pack Format: {fmt}")
-
-    # 出力準備
+    if fmt == -1: fmt = detect_pack_format(full_jar_paths) if all_jars else DEFAULT_FORMAT_FALLBACK
     if not os.path.exists(args.output): os.makedirs(args.output)
-    with open(os.path.join(args.output, "pack.mcmeta"), 'w', encoding='utf-8') as f:
-        json.dump({"pack": {"pack_format": fmt, "description": f"Translated by {args.engine}"}}, f, indent=4)
-
-    cache = load_json(CACHE_FILE)
-    if args.reset and os.path.exists(PROGRESS_FILE): os.remove(PROGRESS_FILE)
-    processed = load_json(PROGRESS_FILE)
-    
+    mcmeta_path = os.path.join(args.output, "pack.mcmeta")
+    if not os.path.exists(mcmeta_path) or args.force:
+        with open(mcmeta_path, 'w', encoding='utf-8') as f:
+            json.dump({"pack": {"pack_format": fmt, "description": f"Translated by {args.engine}"}}, f, indent=4)
+    cache_file_path = os.path.join(args.output, CACHE_FILENAME)
+    progress_file_path = os.path.join(args.output, PROGRESS_FILENAME)
+    cache = load_json(cache_file_path, dict)
+    if args.reset and os.path.exists(progress_file_path): os.remove(progress_file_path)
+    processed = load_json(progress_file_path, list)
     target_jars = [p for p in full_jar_paths if os.path.basename(p) not in processed]
-    print(f"Target: {len(target_jars)} mods")
-
-    with tqdm(total=0, unit="keys", dynamic_ncols=True) as pbar:
+    
+    # 絶対パスを取得して表示（ここを修正）
+    abs_output_path = os.path.abspath(args.output)
+    print(f"\n[Project Info]")
+    print(f"  Output Dir: {abs_output_path}")
+    print(f"  Cache File: {os.path.join(abs_output_path, CACHE_FILENAME)}")
+    print(f"  Remaining : {len(target_jars)} jars")
+    
+    if active_model and args.engine == "gemini":
+        print(f"  Active Engine: Gemini ({active_model})")
+    with tqdm(total=len(target_jars), unit="mod", dynamic_ncols=True) as pbar:
         for jar_path in target_jars:
             jar_name = os.path.basename(jar_path)
-            
-            if process_jar(jar_path, args.output, cache, pbar, args.engine, gemini_model, args.force):
-                processed.append(jar_name)
-                save_json(PROGRESS_FILE, processed)
-                # 少し頻繁に保存する
-                save_json(CACHE_FILE, cache)
-
+            pbar.set_description(f"{jar_name[:20]}...")
+            process_jar(jar_path, args.output, cache, args.engine, args.key, active_model, args.force)
+            processed.append(jar_name)
+            save_json(progress_file_path, processed)
+            save_json(cache_file_path, cache)
+            pbar.update(1)
     print("Done!")
 
 if __name__ == "__main__":
