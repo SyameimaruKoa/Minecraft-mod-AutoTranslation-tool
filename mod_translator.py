@@ -11,6 +11,10 @@ PROGRESS_FILENAME = "progress_log.json"
 DEFAULT_FORMAT_FALLBACK = 34
 BATCH_SIZE = 10
 
+# 【重要】API制限対策: リクエスト間の待機時間（秒）
+# 無料枠は 15 RPM (4秒に1回) なので、余裕を持って 5秒 に設定
+REQUEST_INTERVAL = 5.0 
+
 # エラー判定用ワード
 ERROR_KEYWORDS = [
     "Error 504", "Server Error", "That’s an error", 
@@ -92,6 +96,9 @@ def get_available_models(api_key):
     except: return []
 
 def call_gemini_rest(model_name, api_key, prompt):
+    """
+    戻り値: (json_data, status_code)
+    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     data = {
@@ -99,24 +106,24 @@ def call_gemini_rest(model_name, api_key, prompt):
         "generationConfig": {"response_mime_type": "application/json"}
     }
     try:
-        # レート制限時は429が返るため、ステータスコードをチェック
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        if response.status_code != 200:
-            # エラー詳細をデバッグ用に表示しても良いが、ここではNoneを返して次へ
-            return None
-        return response.json()
-    except: return None
+        # タイムアウトを少し長めに
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        try:
+            return response.json(), response.status_code
+        except:
+            return None, response.status_code
+    except Exception as e:
+        return None, 0
 
 def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
     """
     models_list: 利用可能なモデルのリスト（優先順）
-    エラーが出たら次のモデルにスイッチする
+    レート制限(429)時は待機し、その他のエラー時はモデルを切り替える
     """
     to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
     if not to_translate: return True
     items = list(to_translate.items())
     
-    # 現在使用中のモデルインデックス（最初は0=最優先モデル）
     current_model_idx = 0
     
     for i in range(0, len(items), BATCH_SIZE):
@@ -125,35 +132,49 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
         prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
         
         batch_success = False
+        retry_count = 0
+        max_retries_per_model = 3
         
-        # 成功するまでモデルを切り替えてリトライ
         while current_model_idx < len(models_list):
             active_model = models_list[current_model_idx]
-            result_json = call_gemini_rest(active_model, api_key, prompt)
+            result_json, status_code = call_gemini_rest(active_model, api_key, prompt)
             
-            if result_json and 'candidates' in result_json:
+            # 成功 (200)
+            if status_code == 200 and result_json and 'candidates' in result_json:
                 try:
                     raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
                     translated_batch = json.loads(raw_text)
                     for k, original_v in batch.items():
                         if k in translated_batch and is_valid_translation(translated_batch[k]):
                             cache[original_v] = translated_batch[k]
-                    time.sleep(1.0)
+                    
+                    # 成功したら、次のリクエストまでしっかり待機（レート制限対策）
+                    time.sleep(REQUEST_INTERVAL)
                     batch_success = True
-                    break # バッチ処理成功、次のバッチへ
+                    break
                 except:
-                    # JSONパースエラー等はモデルのせいではないかもしれないが、念のため次へ
                     print(f" [Warn] Model {active_model} output invalid JSON. Switching...")
                     current_model_idx += 1
-                    time.sleep(1)
+                    time.sleep(2)
+            
+            # レート制限 (429) -> モデルを変えずに待機！
+            elif status_code == 429:
+                print(f"\n [Rate Limit] 429 Too Many Requests on {active_model}.")
+                print(f" [Cooldown] Cooling down for 60 seconds... (Please wait)")
+                time.sleep(60)
+                # リトライ回数を増やさずにループ（無限リトライに近いが、進まないと意味がないため）
+                # ただし無限ループ防止でidxを変えてみる手もあるが、429は待てば治る
+                continue
+
+            # その他のエラー (500, 503など) -> モデル切り替え
             else:
-                # レート制限(429)やAPIエラーの場合
-                print(f" [Warn] Model {active_model} limit/error. Switching to next model...")
+                print(f" [Error] Status {status_code} on {active_model}. Switching model...")
                 current_model_idx += 1
-                time.sleep(1)
+                time.sleep(2)
         
         if not batch_success:
-            print(" [Error] All available Gemini models failed or rate limited.")
+            print(" [Error] All available Gemini models failed.")
+            # ここでFalseを返すとそのJar全体の翻訳が止まるが、続行させたい場合はreturn Trueもあり
             return False
 
     return True
@@ -227,9 +248,6 @@ def detect_pack_format(jar_paths):
     return collections.Counter(formats).most_common(1)[0][0]
 
 def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models_list=None, force=False):
-    """
-    active_models_list: Geminiの場合、モデル名のリストを受け取る
-    """
     try:
         with zipfile.ZipFile(jar_path, 'r') as z:
             all_files = z.namelist()
@@ -266,7 +284,6 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models
                 os.makedirs(target_dir, exist_ok=True)
                 
                 if engine == "gemini" and active_models_list:
-                    # リストを渡す
                     translate_gemini_batch_rest(keys_to_translate, active_models_list, api_key, cache)
                 elif engine == "lmstudio":
                     translate_lmstudio_batch(keys_to_translate, cache)
@@ -280,9 +297,6 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models
     except: return False
 
 def select_gemini_models(api_key, manual_mode=False):
-    """
-    利用可能なモデルのリストを優先順に返す
-    """
     print("Fetching available models from Google API...")
     models = get_available_models(api_key)
     if not models: return None
@@ -294,7 +308,6 @@ def select_gemini_models(api_key, manual_mode=False):
             if 0 <= idx < len(models): return [models[idx]]
         except: pass
     
-    # 優先順位リスト（ユーザー指定の2.5-flash-liteを含む）
     priority_order = [
         "gemini-2.0-flash-lite",
         "gemini-2.5-flash-lite",
@@ -302,13 +315,11 @@ def select_gemini_models(api_key, manual_mode=False):
         "gemini-1.5-flash"
     ]
     
-    # 利用可能なモデルの中から、優先順位リストにあるものを抽出
     selected_models = []
     for p in priority_order:
         if p in models:
             selected_models.append(p)
     
-    # 優先リストにないものも、予備として末尾に追加しておく（重複除外）
     for m in models:
         if m not in selected_models and "flash" in m:
             selected_models.append(m)
@@ -340,7 +351,6 @@ def main():
     elif args.engine == "lmstudio":
         print("[INFO] Using LM Studio. Ensure Server is running at port 1234.")
     elif args.engine == "ollama":
-        # Ollamaはまだ単一モデル対応のみだが、必要なら拡張可能
         active_models_list = [args.model]
         
     if not os.path.exists(args.input): sys.exit(1)
