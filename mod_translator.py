@@ -1,27 +1,22 @@
-import os, sys, json, zipfile, argparse, time, collections, re
+import os
+import json
+import time
+import re
+import argparse
+import zipfile
 import requests
-from tqdm import tqdm
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from deep_translator import GoogleTranslator
 
-# ==========================================
-# 設定・定数
-# ==========================================
-CACHE_FILENAME = "trans_cache.json"
-PROGRESS_FILENAME = "progress_log.json"
-DEFAULT_FORMAT_FALLBACK = 34
-BATCH_SIZE = 10
-REQUEST_INTERVAL = 5.0
+# --- 定数設定 ---
+DEFAULT_FORMAT_FALLBACK = 34  # pack.mcmetaが見つからない場合のデフォルトバージョン
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?key={}"
+OLLAMA_API_URL = "http://localhost:11434/api/chat"
+LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 
-# エラー判定用キーワード（これらが含まれていたら翻訳失敗とみなす）
-ERROR_KEYWORDS = [
-    "Server Error", "That’s an error", 
-    "429 Too Many Requests", "MYMEMORY WARNING",
-    "Bad Gateway", "Internal Server Error",
-    "Service Unavailable", "Gateway Time-out"
-]
-
-# デフォルトの優先順位（RPD > TPM > RPM の順）
-# ユーザー要望により 2.0 Lite を Gemma より優先し、Pro を除外
+# 優先モデルリスト（ユーザー指定）
 DEFAULT_PRIORITY = [
     # 1. Gemini 2.5 Lite (RPD 1,000 - 最優先主力)
     "gemini-2.5-flash-lite",
@@ -61,576 +56,493 @@ DEFAULT_PRIORITY = [
     "gemini-flash-latest"
 ]
 
-# ==========================================
-# 関数定義
-# ==========================================
+# 翻訳除外キー（これらは翻訳しない）
+IGNORE_KEYS = [
+    "pack.mcmeta", "pack.description", "_comment", 
+    "language.name", "language.region", "language.code"
+]
 
-def is_valid_translation(text):
-    if not text: return True
-    text_str = str(text)
-    for kw in ERROR_KEYWORDS:
-        if kw in text_str: return False
-    if re.search(r'Error\s+\d{3}', text_str, re.IGNORECASE): return False
-    if re.search(r'HTTP\s+\d{3}', text_str, re.IGNORECASE): return False
-    return True
+# エラー検出用キーワード（これらが含まれていたら翻訳失敗とみなして削除・再翻訳する）
+ERROR_KEYWORDS = [
+    "Error 504", "HTTP 429", "Model overloaded", "Internal Server Error",
+    "quota exceeded", "Too Many Requests", "Service Unavailable"
+]
 
-def load_json(filepath, default_type=dict):
-    default_val = default_type()
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict) and "trans_cache.json" in filepath:
-                clean_data = {}
-                dirty_count = 0
-                for k, v in data.items():
-                    if is_valid_translation(v):
-                        clean_data[k] = v
-                    else:
-                        dirty_count += 1
-                if dirty_count > 0:
-                    pass 
-                return clean_data
-            return data
-        except:
-            return default_val
-    return default_val
+def get_model_settings(model_name):
+    """
+    モデル名に基づいて、最適なバッチサイズ（行数）とリクエスト間隔（秒）を返す。
+    
+    戦略:
+    - Gemini 2.5 Flash-Lite: RPD(1000)は多いがTPM(250k)がボトルネック -> バッチ小さめ、回転数で稼ぐ。RPM15なので4s待機。
+    - Gemini 2.0 Flash-Lite: TPM(1M)は多いがRPD(200)が少ない -> バッチ特大、回数を減らす。
+    - Gemma 3: TPM(15k)が極端に少ない -> バッチ極小。
+    - Pro: RPM(2)が極端に遅い -> 待機時間特大。
+    """
+    if not model_name:
+        return 45, 2.0  # デフォルト
+
+    name = model_name.lower()
+    
+    # デフォルト値
+    batch_size = 45
+    interval = 2.0
+
+    if "gemma" in name:
+        # Gemma 3 (TPM 15,000 / RPD 14,400)
+        # トークンが極端に少ないため、極小バッチで刻む必要がある
+        batch_size = 7 
+        interval = 1.5 
+
+    elif "gemini-2.0-flash-lite" in name:
+        # Gemini 2.0 Flash-Lite (TPM 1,000,000 / RPD 200 / RPM 30)
+        # リクエスト回数(RPD 200)が貴重。トークンは余っているので限界まで詰め込む。
+        batch_size = 75 
+        interval = 3.0 
+
+    elif "gemini-2.0-flash" in name:
+        # Gemini 2.0 Flash (TPM 1,000,000 / RPD 200 / RPM 15)
+        batch_size = 60
+        interval = 5.0 
+
+    elif "gemini-2.5-flash-lite" in name:
+        # Gemini 2.5 Flash-Lite (TPM 250,000 / RPD 1,000 / RPM 15)
+        # RPDは潤沢だが、TPMが少し低い。バッチを小さくしてバーストを防ぐ。
+        batch_size = 30
+        interval = 5.0 
+
+    elif "gemini-2.5-flash" in name:
+        # Gemini 2.5 Flash (TPM 250,000 / RPD 250 / RPM 10)
+        batch_size = 40
+        interval = 7.0 
+
+    elif "pro" in name:
+        # Gemini 2.5 Pro (RPM 2)
+        # とにかく遅い。
+        batch_size = 50
+        interval = 32.0 
+
+    return batch_size, interval
+
+def get_available_gemini_models(api_key):
+    """APIキーを使用して現在利用可能なモデル一覧を取得する"""
+    try:
+        url = GEMINI_MODELS_URL.format(api_key)
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            # "models/gemini-..." という形式で返ってくるので "gemini-..." だけ抽出
+            models = [m["name"].replace("models/", "") for m in data.get("models", [])]
+            return models
+        else:
+            print(f"警告: モデル一覧の取得に失敗しました (HTTP {response.status_code})")
+            return []
+    except Exception as e:
+        print(f"警告: モデル一覧取得中にエラーが発生: {e}")
+        return []
+
+def select_best_model(api_key, lite_only=False):
+    """優先順位リストと利用可能なモデルを照らし合わせて、最適なモデルを選択する"""
+    print("情報: 利用可能なGeminiモデルを探索中...")
+    available_models = get_available_gemini_models(api_key)
+    
+    if not available_models:
+        # API通信に失敗した場合は、優先リストのトップを強制的に返す（イチかバチか）
+        fallback = DEFAULT_PRIORITY[0]
+        print(f"警告: モデル一覧が取得できなかったため、デフォルトの {fallback} を使用します。")
+        return fallback
+
+    # 利用可能なモデルを表示（デバッグ用）
+    # print(f"DEBUG: Available models: {available_models}")
+
+    for candidate in DEFAULT_PRIORITY:
+        # Lite限定モードなら "lite" が含まれていないモデルはスキップ
+        if lite_only and "lite" not in candidate.lower():
+            continue
+            
+        # 候補が利用可能リストに存在するかチェック
+        if candidate in available_models:
+            return candidate
+    
+    # 見つからなかった場合
+    if lite_only:
+        print("警告: Liteモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。")
+        return "gemini-2.5-flash-lite"
+    else:
+        print("警告: 優先リスト内のモデルが見つかりませんでした。gemini-2.0-flash を使用します。")
+        return "gemini-2.0-flash"
+
+# --- ユーティリティ関数 ---
+
+def load_json(filepath):
+    """JSONファイルを読み込む。失敗したら空辞書を返す。"""
+    if not os.path.exists(filepath):
+        return {}
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"警告: JSON読み込みエラー {filepath}: {e}")
+        return {}
 
 def save_json(filepath, data):
-    parent_dir = os.path.dirname(filepath)
-    if parent_dir and not os.path.exists(parent_dir):
-        os.makedirs(parent_dir, exist_ok=True)
+    """JSONファイルを保存する。"""
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- .lang ファイル用パーサー ---
-def load_lang_file(content):
-    data = {}
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#') or line.startswith('//'):
-            continue
-        if '=' in line:
-            key, value = line.split('=', 1)
-            data[key.strip()] = value.strip()
-    return data
+def clean_text(text):
+    """Minecraftのカラーコードなどを除去して翻訳しやすくする（簡易版）"""
+    return text
 
-def save_lang_file(filepath, data):
-    parent_dir = os.path.dirname(filepath)
-    if parent_dir and not os.path.exists(parent_dir):
-        os.makedirs(parent_dir, exist_ok=True)
-        
-    with open(filepath, 'w', encoding='utf-8') as f:
-        for k, v in data.items():
-            f.write(f"{k}={v}\n")
-
-def get_translator_google():
-    return GoogleTranslator(source='auto', target='ja')
-
-def translate_google_single(text, translator, cache):
-    if not text or str(text).strip() == "": return text
-    if text in cache: return cache[text]
-    if str(text).replace(".", "").isdigit(): return text
-    try:
-        res = translator.translate(text)
-        if not is_valid_translation(res):
-            time.sleep(1.0)
-            return text
-        cache[text] = res
-        time.sleep(0.5)
-        return res
-    except:
-        return text
-
-def extract_json_from_response(text):
-    try:
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
-            json_str = match.group(0)
-            return json.loads(json_str)
-        cleaned = text.replace("```json", "").replace("```", "").strip()
-        return json.loads(cleaned)
-    except:
-        return None
-
-# --- Gemini API ---
-def get_available_models(api_key):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code != 200: return []
-        data = res.json()
-        models = []
-        if 'models' in data:
-            for m in data['models']:
-                if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    models.append(m['name'].replace('models/', ''))
-        return models
-    except: return []
-
-def call_gemini_rest(model_name, api_key, prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-    headers = {'Content-Type': 'application/json'}
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=15)
-        try:
-            return response.json(), response.status_code
-        except:
-            return None, response.status_code
-    except Exception as e:
-        return None, 0
-
-def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
-    to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
-    if not to_translate: return True
-    items = list(to_translate.items())
-    
-    total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
-    current_model_idx = 0
-    
-    system_instruction = "Translate Minecraft Shader/Mod Config to Japanese. Keep format codes (§a, %s) unchanged. Use natural Japanese terms for graphics settings."
-
-    with tqdm(total=total_batches, desc="    Translating", leave=False, unit="batch") as batch_pbar:
-        for i in range(0, len(items), BATCH_SIZE):
-            batch = dict(items[i : i + BATCH_SIZE])
-            input_text = json.dumps(batch, ensure_ascii=False)
-            prompt = f"""{system_instruction}
-            Output JSON only. No markdown.
-            JSON: {input_text}"""
-            
-            batch_success = False
-            
-            while True:
-                if current_model_idx >= len(models_list):
-                    batch_pbar.write("    [Wait] All selected models busy. Cooling down for 60s...")
-                    time.sleep(60)
-                    current_model_idx = 0 
-                    batch_pbar.write("    [Resume] Retrying...")
-                    continue 
-
-                active_model = models_list[current_model_idx]
-                result_json, status_code = call_gemini_rest(active_model, api_key, prompt)
-                
-                if status_code == 200 and result_json and 'candidates' in result_json:
-                    raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
-                    translated_batch = extract_json_from_response(raw_text)
-                    
-                    if translated_batch:
-                        for k, original_v in batch.items():
-                            if k in translated_batch:
-                                t_val = translated_batch[k]
-                                if is_valid_translation(t_val):
-                                    cache[original_v] = t_val
-                        time.sleep(REQUEST_INTERVAL)
-                        batch_success = True
-                        break
-                    else:
-                        batch_pbar.write(f"    [Warn] {active_model} invalid JSON structure. Switching...")
-                        current_model_idx += 1
-                        time.sleep(1)
-                elif status_code == 429:
-                    batch_pbar.write(f"    [Limit] {active_model} (429). Switching...")
-                    current_model_idx += 1
-                    time.sleep(1)
-                else:
-                    batch_pbar.write(f"    [Error {status_code}] {active_model} failed. Switching...")
-                    current_model_idx += 1
-                    time.sleep(1)
-            
-            if not batch_success:
-                return False
-            batch_pbar.update(1)
-    return True
-
-def call_lmstudio_rest(prompt):
-    url = "http://localhost:1234/v1/chat/completions"
-    headers = {'Content-Type': 'application/json'}
-    messages = [
-        {"role": "system", "content": "You are a translator. Output only valid JSON. No markdown, no explanations."},
-        {"role": "user", "content": prompt}
-    ]
-    data = {
-        "model": "local-model",
-        "messages": messages,
-        "temperature": 0.1,
-        "max_tokens": -1,
-        "stream": False
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=300)
-        if response.status_code != 200: return None
-        return response.json()
-    except: return None
-
-def translate_lmstudio_batch(key_value_dict, cache):
-    to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
-    if not to_translate: return True
-    items = list(to_translate.items())
-    
-    total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
-    with tqdm(total=total_batches, desc="    Translating", leave=False, unit="batch") as batch_pbar:
-        for i in range(0, len(items), BATCH_SIZE):
-            batch = dict(items[i : i + BATCH_SIZE])
-            input_text = json.dumps(batch, ensure_ascii=False)
-            prompt = f"""Translate the values in the following JSON to Japanese. Keys must remain unchanged. Output strictly valid JSON. Input: {input_text}"""
-            
-            result = call_lmstudio_rest(prompt)
-            if result and 'choices' in result:
-                raw_text = result['choices'][0]['message']['content']
-                translated_batch = extract_json_from_response(raw_text)
-                if translated_batch:
-                    for k, original_v in batch.items():
-                        if k in translated_batch and is_valid_translation(translated_batch[k]):
-                            cache[original_v] = translated_batch[k]
-                else:
-                    sample = raw_text[:50].replace('\n', ' ')
-                    batch_pbar.write(f" [Warn] LM Studio JSON parse failed. Start with: {sample}...")
-            else:
-                batch_pbar.write(" [Warn] No response from LM Studio.")
-            batch_pbar.update(1)
-    return True
-
-def find_ja_path(en_path):
-    if "en_us.json" in en_path: return en_path.replace("en_us.json", "ja_jp.json")
-    elif "en_US.json" in en_path: return en_path.replace("en_US.json", "ja_jp.json")
-    elif "en_US.lang" in en_path: return en_path.replace("en_US.lang", "ja_JP.lang")
-    elif "en_us.lang" in en_path: return en_path.replace("en_us.lang", "ja_jp.lang")
-    return None
-
-def detect_pack_format(jar_paths):
-    formats = []
-    print("Detecting pack format...")
-    target_jars = jar_paths[:min(20, len(jar_paths))]
-    for jar_path in target_jars:
-        try:
-            with zipfile.ZipFile(jar_path, 'r') as z:
-                if "pack.mcmeta" in z.namelist():
-                    with z.open("pack.mcmeta") as f:
-                        meta = json.load(f)
-                        fmt = meta.get("pack", {}).get("pack_format")
-                        if fmt: formats.append(fmt)
-        except: continue
-    if not formats: return DEFAULT_FORMAT_FALLBACK
-    return collections.Counter(formats).most_common(1)[0][0]
-
-def clean_existing_output(output_dir):
-    cleaned_count = 0
-    for root, _, files in os.walk(output_dir):
-        for file in files:
-            if file.endswith(".json"):
-                path = os.path.join(root, file)
-                try:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    modified = False
-                    if isinstance(data, dict):
-                        keys_to_remove = []
-                        for k, v in data.items():
-                            if not is_valid_translation(v):
-                                keys_to_remove.append(k)
-                                modified = True
-                        for k in keys_to_remove:
-                            del data[k]
-                            cleaned_count += 1
-                    if modified:
-                        with open(path, 'w', encoding='utf-8') as f:
-                            json.dump(data, f, ensure_ascii=False, indent=4)
-                except: continue
-            elif file.endswith(".lang"):
-                path = os.path.join(root, file)
-                try:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    data = load_lang_file(content)
-                    modified = False
-                    keys_to_remove = []
-                    for k, v in data.items():
-                        if not is_valid_translation(v):
-                            keys_to_remove.append(k)
-                            modified = True
-                    for k in keys_to_remove:
-                        del data[k]
-                        cleaned_count += 1
-                    if modified:
-                        save_lang_file(path, data)
-                except: continue
-    if cleaned_count > 0:
-        print(f"[Info] Cleaned {cleaned_count} error entries from existing output files.")
-
-def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models_list=None, force=False):
-    try:
-        with zipfile.ZipFile(jar_path, 'r') as z:
-            all_files = z.namelist()
-            en_files = [f for f in all_files if f.lower().endswith("en_us.json") or f.endswith("en_US.lang") or f.endswith("en_us.lang")]
-            
-            if not en_files: return True
-            
-            translator_google = get_translator_google()
-            
-            # シェーダーパック名を取得（拡張子なし）
-            jar_name_no_ext = os.path.splitext(os.path.basename(jar_path))[0]
-
-            for en_file_path in en_files:
-                is_lang_file = en_file_path.lower().endswith(".lang")
-                
-                parts = en_file_path.split('/')
-                mod_id = "unknown"
-                if 'assets' in parts:
-                    try: mod_id = parts[parts.index('assets') + 1]
-                    except: pass
-                
-                with z.open(en_file_path) as src:
-                    content = src.read().decode('utf-8', errors='replace')
-                    if is_lang_file:
-                        en_data = load_lang_file(content)
-                    else:
-                        try: en_data = json.load(src) 
-                        except: en_data = json.loads(content)
-
-                ja_file_path_in_jar = find_ja_path(en_file_path)
-                
-                # 【変更点】出力パスの決定ロジック (シェーダー名でフォルダ分け)
-                if is_lang_file:
-                    if 'assets' in parts:
-                        # Mod内の場合 (assets/modid/lang) -> 従来の構造
-                        target_dir = os.path.join(output_dir, "assets", mod_id, "lang")
-                    else:
-                         # シェーダーの場合
-                         # output_dir / シェーダー名 / shaders/lang
-                         # en_file_path の親ディレクトリ構造も一応維持するが、基本は shaders/lang
-                         relative_dir = os.path.dirname(en_file_path)
-                         target_dir = os.path.join(output_dir, jar_name_no_ext, relative_dir)
-                    
-                    os.makedirs(target_dir, exist_ok=True)
-                    target_ja_path = os.path.join(target_dir, os.path.basename(ja_file_path_in_jar))
-                else:
-                    # 通常のMod翻訳 (.json)
-                    target_dir = os.path.join(output_dir, "assets", mod_id, "lang")
-                    os.makedirs(target_dir, exist_ok=True)
-                    target_ja_path = os.path.join(target_dir, "ja_jp.json")
-                
-                final_data = {}
-                
-                if ja_file_path_in_jar in all_files:
-                    try:
-                        with z.open(ja_file_path_in_jar) as ja_src:
-                            ja_content = ja_src.read().decode('utf-8', errors='replace')
-                            if is_lang_file:
-                                mod_ja_data = load_lang_file(ja_content)
-                            else:
-                                mod_ja_data = json.loads(ja_content)
-                            final_data.update(mod_ja_data)
-                    except: pass
-
-                if os.path.exists(target_ja_path):
-                    try:
-                        with open(target_ja_path, 'r', encoding='utf-8') as existing_f:
-                            if is_lang_file:
-                                existing_data = load_lang_file(existing_f.read())
-                            else:
-                                existing_data = json.load(existing_f)
-                            final_data.update(existing_data)
-                    except: pass
-                
-                keys_to_translate = {}
-                for k, v in en_data.items():
-                    should_translate = False
-                    if force: should_translate = True
-                    elif k not in final_data: should_translate = True
-                    elif not is_valid_translation(final_data[k]): should_translate = True
-                    
-                    if should_translate:
-                        keys_to_translate[k] = v
-                
-                if not keys_to_translate: continue
-
-                if engine == "gemini" and active_models_list:
-                    translate_gemini_batch_rest(keys_to_translate, active_models_list, api_key, cache)
-                elif engine == "lmstudio":
-                    translate_lmstudio_batch(keys_to_translate, cache)
-                
-                for k, v in keys_to_translate.items():
-                    translated_val = v
-                    if v in cache: 
-                        translated_val = cache[v]
-                    else: 
-                        translated_val = translate_google_single(v, translator_google, cache)
-                    
-                    if is_valid_translation(translated_val):
-                        final_data[k] = translated_val
-                    else:
-                        if v in cache: del cache[v]
-                        final_data[k] = v
-
-                if is_lang_file:
-                    save_lang_file(target_ja_path, final_data)
-                else:
-                    with open(target_ja_path, 'w', encoding='utf-8') as out:
-                        json.dump(final_data, out, ensure_ascii=False, indent=4)
-        return True
-    except Exception as e:
+def is_valid_translation(original, translated):
+    """翻訳結果が妥当かチェックする（エラーメッセージの混入などを防ぐ）"""
+    if not translated:
         return False
+    for keyword in ERROR_KEYWORDS:
+        if keyword in translated:
+            return False
+    return True
 
-def select_gemini_models(api_key, manual_mode=False, priority_str=None, lite_only=False):
-    print("Fetching available models from Google API...")
-    models = get_available_models(api_key)
+def clean_cache(cache_data):
+    """キャッシュ内の汚染データ（エラーメッセージ）を削除する"""
+    cleaned_count = 0
+    keys_to_remove = []
+    for key, value in cache_data.items():
+        if not is_valid_translation(key, value):
+            keys_to_remove.append(key)
     
-    print("\n[INFO] Available Models on API:")
-    for m in models:
-        print(f" - {m}")
-    print("")
+    for key in keys_to_remove:
+        del cache_data[key]
+        cleaned_count += 1
+    
+    if cleaned_count > 0:
+        print(f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。これらは再翻訳されます。")
+    return cache_data
 
-    if not models:
-        print("[ERROR] No accessible models found. Check your API Key.")
-        return None
+# --- ファイル解析関連 ---
+
+def detect_pack_format(mod_path):
+    """Mod内のpack.mcmetaからバージョン情報を取得する"""
+    try:
+        with zipfile.ZipFile(mod_path, 'r') as zf:
+            if "pack.mcmeta" in zf.namelist():
+                with zf.open("pack.mcmeta") as f:
+                    data = json.load(f)
+                    return data.get("pack", {}).get("pack_format", DEFAULT_FORMAT_FALLBACK)
+    except:
+        pass
+    return DEFAULT_FORMAT_FALLBACK
+
+def extract_lang_files(mod_path, is_shader_mode=False):
+    """Mod/Shaderから言語ファイル(en_us.json / .lang)を抽出する"""
+    extracted = {} # {filename: content_dict}
+    try:
+        with zipfile.ZipFile(mod_path, 'r') as zf:
+            for file in zf.namelist():
+                # JSON言語ファイル (Mod)
+                if not is_shader_mode and file.endswith("en_us.json") and "assets" in file:
+                    with zf.open(file) as f:
+                        try:
+                            content = json.load(f)
+                            extracted[file] = content
+                        except:
+                            continue
+                
+                # .langファイル (Shader / 古いMod)
+                elif file.endswith(".lang") or (is_shader_mode and file.endswith("en_US.lang")):
+                    with zf.open(file) as f:
+                        try:
+                            content = {}
+                            for line in f.read().decode('utf-8', errors='ignore').splitlines():
+                                line = line.strip()
+                                if "=" in line and not line.startswith("#"):
+                                    k, v = line.split("=", 1)
+                                    content[k.strip()] = v.strip()
+                            if content:
+                                extracted[file] = content
+                        except:
+                            continue
+    except Exception as e:
+        print(f"エラー: ファイル読み込み失敗 {mod_path}: {e}")
+    return extracted
+
+# --- 翻訳エンジン ---
+
+def translate_google_batch(text_list):
+    """Google翻訳 (Deep Translator) を使用"""
+    try:
+        translator = GoogleTranslator(source='auto', target='ja')
+        return translator.translate_batch(text_list)
+    except Exception as e:
+        print(f"Google翻訳エラー: {e}")
+        return text_list
+
+def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
+    """Gemini APIを使用した翻訳（動的バッチサイズ対応）"""
+    if not text_dict:
+        return {}
     
-    if manual_mode:
-        for i, m in enumerate(models): print(f"  [{i+1}] {m}")
+    # モデル設定の取得
+    batch_size, interval = get_model_settings(model_name)
+    print(f"情報: モデル [{model_name}] 設定 -> バッチサイズ: {batch_size}行, 待機時間: {interval}秒")
+
+    translated_results = {}
+    keys = list(text_dict.keys())
+    
+    total = len(keys)
+    processed = 0
+
+    for i in range(0, total, batch_size):
+        batch_keys = keys[i : i + batch_size]
+        batch_dict = {k: text_dict[k] for k in batch_keys}
+        
+        prompt = (
+            "あなたはMinecraftのMod翻訳の専門家です。以下のJSONオブジェクトの値を日本語に翻訳してください。\n"
+            "Minecraft特有の用語（Redstone, Mobなど）は文脈に合わせて適切に訳してください。\n"
+            "フォーマットはJSONのまま出力してください。キーは変更しないでください。\n"
+            "色コード（§rなど）やフォーマット指定子（%sなど）は維持してください。\n\n"
+            f"{json.dumps(batch_dict, ensure_ascii=False)}"
+        )
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                url = GEMINI_API_URL.format(model_name) + f"?key={api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json"}
+                }
+                
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                
+                if response.status_code == 200:
+                    result_json = response.json()
+                    try:
+                        content_text = result_json["candidates"][0]["content"]["parts"][0]["text"]
+                        translated_batch = json.loads(content_text)
+                        translated_results.update(translated_batch)
+                        break
+                    except (KeyError, json.JSONDecodeError) as e:
+                        print(f"警告: Gemini応答の解析失敗 (試行 {attempt+1}): {e}")
+                
+                elif response.status_code == 429:
+                    print(f"警告: レート制限 (429) 発生。{interval * 2}秒待機して再試行します...")
+                    time.sleep(interval * 2)
+                else:
+                    print(f"APIエラー: {response.status_code} - {response.text}")
+                    
+            except Exception as e:
+                print(f"通信エラー (試行 {attempt+1}): {e}")
+                time.sleep(2)
+        
+        processed += len(batch_keys)
+        print(f"  進捗: {processed}/{total} 行完了...")
+        time.sleep(interval)
+
+    return translated_results
+
+def translate_local_llm(text_dict, engine, model_name):
+    """ローカルLLM (Ollama/LM Studio) を使用した翻訳"""
+    BATCH_SIZE = 20 
+    url = OLLAMA_API_URL if engine == "ollama" else LMSTUDIO_API_URL
+    
+    translated_results = {}
+    keys = list(text_dict.keys())
+    
+    for i in range(0, len(keys), BATCH_SIZE):
+        batch_keys = keys[i : i + BATCH_SIZE]
+        batch_dict = {k: text_dict[k] for k in batch_keys}
+        
+        prompt = f"Translate the values of this JSON to Japanese for Minecraft Mod. Keep keys unchanged. JSON only:\n{json.dumps(batch_dict, ensure_ascii=False)}"
+
         try:
-            idx = int(input(f"Select (1-{len(models)}) > ")) - 1
-            if 0 <= idx < len(models): return [models[idx]]
-        except: pass
-    
-    selected_models = []
-    
-    if priority_str:
-        user_priority = [p.strip() for p in priority_str.split(',')]
-        print(f"[INFO] Using User Custom Priority: {user_priority}")
-        for p in user_priority:
-            if p in models:
-                selected_models.append(p)
-            else:
-                print(f" [Warn] Custom model '{p}' not found in API list. Skipping.")
-    else:
-        for p in DEFAULT_PRIORITY:
-            if p in models:
-                selected_models.append(p)
-    
-    if not lite_only:
-        for m in models:
-            if m not in selected_models and "flash" in m:
-                if "pro" not in m.lower():
-                    selected_models.append(m)
-
-    if lite_only:
-        print("[INFO] 'Lite Only' mode ENABLED. Filtering non-lite models...")
-        filtered = [m for m in selected_models if "lite" in m.lower()]
-        if not filtered:
-            print(" [Warn] No Lite models found in current selection. Searching available models...")
-            filtered = [m for m in models if "lite" in m.lower()]
-        
-        selected_models = filtered
-        
-        if not selected_models:
-            print("[ERROR] Lite-Only mode is on, but no 'lite' models are available via API.")
-            return None
-
-    if not selected_models and models:
-        non_pro = [m for m in models if "pro" not in m.lower()]
-        if non_pro:
-             selected_models = [non_pro[0]]
-        else:
-             selected_models = [models[0]]
-        
-    print(f"[INFO] Final Model Priority: {' -> '.join(selected_models)}")
-    return selected_models
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", required=False)
-    parser.add_argument("-o", "--output", default="Output_Pack")
-    parser.add_argument("-f", "--format", type=int, default=-1)
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--reset", action="store_true")
-    parser.add_argument("--engine", choices=["google", "gemini", "lmstudio", "ollama"], default="google")
-    parser.add_argument("--key", help="Gemini API Key", default="")
-    parser.add_argument("--model", help="Ollama model", default="gemma2:9b")
-    parser.add_argument("--manual-model", action="store_true")
-    parser.add_argument("--priority", help="Comma separated model list", default=None)
-    parser.add_argument("--lite-only", action="store_true", help="Strictly use only models with 'lite' in their name.")
-
-    try: args = parser.parse_args()
-    except: sys.exit(1)
-    
-    if not args.input:
-        parser.print_help()
-        # (モデルチェッカー省略)
-        sys.exit(0)
-    
-    is_shader_mode = False
-    if "shader" in args.input.lower():
-        print("\n[INFO] Shader Pack mode detected.")
-        is_shader_mode = True
-
-    active_models_list = None
-    if args.engine == "gemini":
-        if not args.key:
-             print("Error: --key is required for Gemini engine.")
-             sys.exit(1)
-        active_models_list = select_gemini_models(args.key, args.manual_model, args.priority, args.lite_only)
-        if not active_models_list:
-            sys.exit(1)
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "format": "json"
+            }
             
-    elif args.engine == "lmstudio":
-        print("[INFO] Using LM Studio. Ensure Server is running at port 1234.")
-    elif args.engine == "ollama":
-        active_models_list = [args.model]
+            response = requests.post(url, json=payload, timeout=120)
+            
+            if response.status_code == 200:
+                res_data = response.json()
+                content = ""
+                if engine == "ollama":
+                    content = res_data.get("message", {}).get("content", "{}")
+                else:
+                    content = res_data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+                
+                try:
+                    batch_res = json.loads(content)
+                    translated_results.update(batch_res)
+                except:
+                    print("警告: ローカルLLMの応答がJSONではありませんでした。スキップします。")
+            else:
+                print(f"ローカルLLMエラー: {response.status_code}")
+
+        except Exception as e:
+            print(f"ローカルLLM通信エラー: {e}")
+
+    return translated_results
+
+
+# --- メイン処理クラス ---
+
+class ModTranslator:
+    def __init__(self, args):
+        self.input_dir = args.input
+        self.output_dir = args.output
+        self.engine = args.engine
+        self.api_key = args.key
+        self.model_name = args.model
+        self.lite_only = args.lite_only
+        self.force = args.force
         
-    if not os.path.exists(args.input):
-        print(f"Error: Input directory '{args.input}' not found.")
-        sys.exit(1)
+        # シェーダーモード判定
+        self.is_shader_mode = "shader" in os.path.basename(self.input_dir).lower()
+        if self.is_shader_mode:
+            print("情報: フォルダ名に'shader'が含まれているため、シェーダーパック翻訳モードで動作します。")
+        
+        # キャッシュとログのパス設定
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.cache_file = os.path.join(self.output_dir, "trans_cache.json")
+        self.log_file = os.path.join(self.output_dir, "progress_log.json")
+        
+        self.cache = load_json(self.cache_file)
+        self.cache = clean_cache(self.cache) # 起動時に汚染データをクリーニング
 
-    all_files = os.listdir(args.input)
-    all_jars = [f for f in all_files if f.lower().endswith((".jar", ".zip"))]
-    full_jar_paths = [os.path.join(args.input, f) for f in all_jars]
-    
-    fmt = args.format
-    if fmt == -1 and not is_shader_mode: 
-        fmt = detect_pack_format(full_jar_paths) if all_jars else DEFAULT_FORMAT_FALLBACK
-    elif is_shader_mode:
-        fmt = 0
+        # モデルの決定（Geminiの場合）
+        if self.engine == "gemini":
+            if not self.model_name:
+                # APIを使って優先リストから最適なモデルを選択
+                if self.api_key:
+                    self.model_name = select_best_model(self.api_key, self.lite_only)
+                else:
+                    print("エラー: Geminiを使用するにはAPIキーが必要です。")
+                    exit(1)
+            print(f"使用モデル: {self.model_name}")
 
-    if not os.path.exists(args.output): os.makedirs(args.output)
-    
-    if not is_shader_mode:
-        mcmeta_path = os.path.join(args.output, "pack.mcmeta")
-        if not os.path.exists(mcmeta_path) or args.force:
-            with open(mcmeta_path, 'w', encoding='utf-8') as f:
-                json.dump({"pack": {"pack_format": fmt, "description": f"Translated by {args.engine}"}}, f, indent=4)
+    def run(self):
+        print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
+        
+        files = [f for f in os.listdir(self.input_dir) if f.endswith(('.jar', '.zip'))]
+        total_files = len(files)
+        
+        print(f"対象ファイル数: {total_files}")
+        
+        for idx, filename in enumerate(files):
+            file_path = os.path.join(self.input_dir, filename)
+            print(f"\n[{idx+1}/{total_files}] 処理中: {filename}")
+            
+            lang_files = extract_lang_files(file_path, self.is_shader_mode)
+            if not lang_files:
+                print("  -> 言語ファイルが見つかりませんでした。スキップ。")
+                continue
+            
+            pack_format = detect_pack_format(file_path)
+            
+            for lang_path, content in lang_files.items():
+                to_translate = {}
+                for k, v in content.items():
+                    if k in IGNORE_KEYS or not isinstance(v, str):
+                        continue
+                    if not self.force and v in self.cache:
+                        continue
+                    to_translate[k] = v
+                
+                if not to_translate:
+                    print("  -> 新規翻訳項目なし。完了。")
+                    translated_data = {k: self.cache.get(v, v) for k, v in content.items() if isinstance(v, str)}
+                else:
+                    print(f"  -> 翻訳対象: {len(to_translate)} 項目")
+                    
+                    new_translations = {}
+                    if self.engine == "google":
+                        keys = list(to_translate.keys())
+                        values = list(to_translate.values())
+                        translated_values = translate_google_batch(values)
+                        for k, tv in zip(keys, translated_values):
+                            new_translations[to_translate[k]] = tv
+                    
+                    elif self.engine == "gemini":
+                        new_translations_raw = translate_with_gemini(to_translate, self.api_key, self.model_name, self.lite_only)
+                        for k, v in new_translations_raw.items():
+                            original_text = content.get(k)
+                            if original_text:
+                                new_translations[original_text] = v
 
-    cache_file_path = os.path.join(args.output, CACHE_FILENAME)
-    progress_file_path = os.path.join(args.output, PROGRESS_FILENAME)
-    
-    cache = load_json(cache_file_path, dict)
-    save_json(cache_file_path, cache)
-    
-    print("[Info] Checking existing output files for errors...")
-    clean_existing_output(args.output)
+                    elif self.engine in ["ollama", "lmstudio"]:
+                        new_translations_raw = translate_local_llm(to_translate, self.engine, self.model_name)
+                        for k, v in new_translations_raw.items():
+                            original_text = content.get(k)
+                            if original_text:
+                                new_translations[original_text] = v
+                    
+                    self.cache.update(new_translations)
+                    save_json(self.cache_file, self.cache)
+                    
+                    translated_data = content.copy()
+                    for k, v in content.items():
+                        if isinstance(v, str) and v in self.cache:
+                            translated_data[k] = self.cache[v]
 
-    if args.reset and os.path.exists(progress_file_path): os.remove(progress_file_path)
-    processed = load_json(progress_file_path, list)
-    target_jars = [p for p in full_jar_paths if os.path.basename(p) not in processed]
-    
-    abs_output_path = os.path.abspath(args.output)
-    print(f"\n[Project Info]")
-    print(f"  Output Dir: {abs_output_path}")
-    print(f"  Cache File: {os.path.join(abs_output_path, CACHE_FILENAME)}")
-    print(f"  Remaining : {len(target_jars)} archives")
-    
-    with tqdm(total=len(target_jars), unit="file", dynamic_ncols=True) as pbar:
-        for jar_path in target_jars:
-            jar_name = os.path.basename(jar_path)
-            pbar.set_description(f"{jar_name[:20]}...")
-            process_jar(jar_path, args.output, cache, args.engine, args.key, active_models_list, args.force)
-            processed.append(jar_name)
-            save_json(progress_file_path, processed)
-            save_json(cache_file_path, cache)
-            pbar.update(1)
-    print("Done!")
+                self.write_output(filename, lang_path, translated_data, pack_format)
+
+    def write_output(self, original_filename, lang_internal_path, data, pack_format):
+        """リソースパックとしてファイルを書き出す"""
+        mod_name = os.path.splitext(original_filename)[0]
+        
+        if self.is_shader_mode:
+            out_path = os.path.join(self.output_dir, mod_name, lang_internal_path)
+        else:
+            path_parts = lang_internal_path.replace("\\", "/").split("/")
+            if "assets" in path_parts:
+                idx = path_parts.index("assets")
+                base_parts = path_parts[idx:-1] 
+                dest_dir = os.path.join(self.output_dir, *base_parts)
+                out_path = os.path.join(dest_dir, "ja_jp.json")
+                
+                mcmeta_path = os.path.join(self.output_dir, "pack.mcmeta")
+                if not os.path.exists(mcmeta_path):
+                    meta = {
+                        "pack": {
+                            "pack_format": pack_format,
+                            "description": "Auto Translated Resource Pack"
+                        }
+                    }
+                    save_json(mcmeta_path, meta)
+            else:
+                return
+
+        final_data = {}
+        for k, v in data.items():
+            if is_valid_translation(k, v):
+                final_data[k] = v
+            else:
+                pass
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        
+        if out_path.endswith(".json"):
+            save_json(out_path, data)
+        else:
+            with open(out_path, 'w', encoding='utf-8') as f:
+                for k, v in data.items():
+                    f.write(f"{k}={v}\n")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Minecraft Mod 自動翻訳ツール")
+    parser.add_argument("-i", "--input", required=True, help="入力フォルダ（Mod/Shaderが入っている場所）")
+    parser.add_argument("-o", "--output", default="Output_Pack", help="出力フォルダ（リソースパック保存先）")
+    parser.add_argument("--engine", choices=["google", "gemini", "ollama", "lmstudio"], default="google", help="翻訳エンジン")
+    parser.add_argument("--key", help="Gemini APIキー")
+    parser.add_argument("--model", help="使用するモデル名 (Gemini/Ollama用)")
+    parser.add_argument("--lite-only", action="store_true", help="GeminiのLiteモデルのみを使用する")
+    parser.add_argument("--force", action="store_true", help="キャッシュを無視して強制的に再翻訳")
+    
+    args = parser.parse_args()
+    
+    translator = ModTranslator(args)
+    translator.run()
