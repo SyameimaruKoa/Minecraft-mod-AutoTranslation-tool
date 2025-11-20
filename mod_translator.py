@@ -11,8 +11,7 @@ PROGRESS_FILENAME = "progress_log.json"
 DEFAULT_FORMAT_FALLBACK = 34
 BATCH_SIZE = 10
 
-# 【重要】API制限対策: リクエスト間の待機時間（秒）
-# 無料枠は 15 RPM (4秒に1回) なので、余裕を持って 5秒 に設定
+# API制限対策: リクエスト間の待機時間
 REQUEST_INTERVAL = 5.0 
 
 # エラー判定用ワード
@@ -106,8 +105,8 @@ def call_gemini_rest(model_name, api_key, prompt):
         "generationConfig": {"response_mime_type": "application/json"}
     }
     try:
-        # タイムアウトを少し長めに
-        response = requests.post(url, headers=headers, json=data, timeout=60)
+        # タイムアウトを30秒に短縮
+        response = requests.post(url, headers=headers, json=data, timeout=30)
         try:
             return response.json(), response.status_code
         except:
@@ -116,27 +115,35 @@ def call_gemini_rest(model_name, api_key, prompt):
         return None, 0
 
 def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
-    """
-    models_list: 利用可能なモデルのリスト（優先順）
-    レート制限(429)時は待機し、その他のエラー時はモデルを切り替える
-    """
     to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
     if not to_translate: return True
     items = list(to_translate.items())
     
+    total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     current_model_idx = 0
     
+    if total_batches > 2:
+        print(f"    > Processing {len(items)} lines in {total_batches} batches...")
+
     for i in range(0, len(items), BATCH_SIZE):
         batch = dict(items[i : i + BATCH_SIZE])
         input_text = json.dumps(batch, ensure_ascii=False)
         prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
         
         batch_success = False
-        retry_count = 0
-        max_retries_per_model = 3
         
-        while current_model_idx < len(models_list):
+        # 成功するまでモデルを切り替えてリトライ
+        while True:
+            # 全モデル使い切った場合
+            if current_model_idx >= len(models_list):
+                print("\n    [Wait] All selected models busy. Cooling down for 60s...")
+                time.sleep(60)
+                current_model_idx = 0 # 最初に戻って再開
+                print("    [Resume] Retrying...")
+                continue 
+
             active_model = models_list[current_model_idx]
+            
             result_json, status_code = call_gemini_rest(active_model, api_key, prompt)
             
             # 成功 (200)
@@ -148,33 +155,27 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
                         if k in translated_batch and is_valid_translation(translated_batch[k]):
                             cache[original_v] = translated_batch[k]
                     
-                    # 成功したら、次のリクエストまでしっかり待機（レート制限対策）
                     time.sleep(REQUEST_INTERVAL)
                     batch_success = True
                     break
                 except:
-                    print(f" [Warn] Model {active_model} output invalid JSON. Switching...")
+                    print(f"    [Warn] {active_model} invalid JSON. Switching...")
                     current_model_idx += 1
-                    time.sleep(2)
+                    time.sleep(1)
             
-            # レート制限 (429) -> モデルを変えずに待機！
+            # レート制限 (429)
             elif status_code == 429:
-                print(f"\n [Rate Limit] 429 Too Many Requests on {active_model}.")
-                print(f" [Cooldown] Cooling down for 60 seconds... (Please wait)")
-                time.sleep(60)
-                # リトライ回数を増やさずにループ（無限リトライに近いが、進まないと意味がないため）
-                # ただし無限ループ防止でidxを変えてみる手もあるが、429は待てば治る
-                continue
-
-            # その他のエラー (500, 503など) -> モデル切り替え
-            else:
-                print(f" [Error] Status {status_code} on {active_model}. Switching model...")
+                print(f"    [Limit] {active_model} (429). Switching model...")
                 current_model_idx += 1
-                time.sleep(2)
+                time.sleep(1)
+
+            # その他のエラー
+            else:
+                print(f"    [Error {status_code}] {active_model} failed. Switching...")
+                current_model_idx += 1
+                time.sleep(1)
         
         if not batch_success:
-            print(" [Error] All available Gemini models failed.")
-            # ここでFalseを返すとそのJar全体の翻訳が止まるが、続行させたい場合はreturn Trueもあり
             return False
 
     return True
@@ -308,26 +309,47 @@ def select_gemini_models(api_key, manual_mode=False):
             if 0 <= idx < len(models): return [models[idx]]
         except: pass
     
-    priority_order = [
-        "gemini-2.0-flash-lite",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash"
-    ]
-    
+    # 優先順位リスト作成ロジック
     selected_models = []
-    for p in priority_order:
-        if p in models:
-            selected_models.append(p)
     
-    for m in models:
-        if m not in selected_models and "flash" in m:
-            selected_models.append(m)
-            
+    # 1. Liteモデルが存在するかチェック（ユーザー要望：LiteならLiteだけで固めたい）
+    lite_candidates = [m for m in models if "lite" in m.lower()]
+    
+    if lite_candidates:
+        # Liteが見つかった場合、これらのみを使用する
+        # まず優先度の高いLiteを追加
+        priority_lite = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite"]
+        for p in priority_lite:
+            if p in models:
+                selected_models.append(p)
+        
+        # その他のLiteモデル（プレビュー版など）も追加
+        for m in lite_candidates:
+            if m not in selected_models:
+                selected_models.append(m)
+                
+        print(f"\n[INFO] Lite Mode Active: Restricting fallbacks to {len(selected_models)} Lite models.")
+        
+    else:
+        # Liteがない場合のみ、通常のFlash系にフォールバック
+        priority_order = [
+            "gemini-2.0-flash-exp",
+            "gemini-1.5-flash",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-flash-8b"
+        ]
+        for p in priority_order:
+            if p in models:
+                selected_models.append(p)
+        
+        for m in models:
+            if m not in selected_models and "flash" in m:
+                selected_models.append(m)
+
     if not selected_models and models:
         selected_models = [models[0]]
         
-    print(f"\n[INFO] Model Priority: {' -> '.join(selected_models[:3])} ...\n")
+    print(f"[INFO] Model Priority: {' -> '.join(selected_models[:3])} ...\n")
     return selected_models
 
 def main():
