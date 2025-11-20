@@ -1,4 +1,4 @@
-import os, sys, json, zipfile, argparse, time, collections
+import os, sys, json, zipfile, argparse, time, collections, re
 import requests
 from tqdm import tqdm
 from deep_translator import GoogleTranslator
@@ -47,7 +47,7 @@ def load_json(filepath, default_type=dict):
                     else:
                         dirty_count += 1
                 if dirty_count > 0:
-                    print(f" [Info] Cleaned {dirty_count} corrupted entries from cache.")
+                    pass 
                 return clean_data
             return data
         except:
@@ -79,9 +79,28 @@ def translate_google_single(text, translator, cache):
     except:
         return text
 
+# --- JSON抽出用ヘルパー ---
+def extract_json_from_response(text):
+    """
+    モデルの出力からJSONブロックだけを正規表現で抜き出す
+    <think>タグやMarkdown記法が含まれていても対応可能にする
+    """
+    try:
+        # 最も外側の {} を探す (DOTALLで改行も含める)
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            return json.loads(json_str)
+        
+        # 正規表現で見つからない場合、従来のクリーニングを試す
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned)
+    except:
+        return None
+
 # --- Gemini API ---
 def get_available_models(api_key):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models?key=](https://generativelanguage.googleapis.com/v1beta/models?key=){api_key}"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code != 200: return []
@@ -95,18 +114,14 @@ def get_available_models(api_key):
     except: return []
 
 def call_gemini_rest(model_name, api_key, prompt):
-    """
-    戻り値: (json_data, status_code)
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model_name}:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"response_mime_type": "application/json"}
     }
     try:
-        # タイムアウトを30秒に短縮
-        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response = requests.post(url, headers=headers, json=data, timeout=15)
         try:
             return response.json(), response.status_code
         except:
@@ -122,61 +137,57 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
     total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     current_model_idx = 0
     
-    if total_batches > 2:
-        print(f"    > Processing {len(items)} lines in {total_batches} batches...")
-
-    for i in range(0, len(items), BATCH_SIZE):
-        batch = dict(items[i : i + BATCH_SIZE])
-        input_text = json.dumps(batch, ensure_ascii=False)
-        prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
-        
-        batch_success = False
-        
-        # 成功するまでモデルを切り替えてリトライ
-        while True:
-            # 全モデル使い切った場合
-            if current_model_idx >= len(models_list):
-                print("\n    [Wait] All selected models busy. Cooling down for 60s...")
-                time.sleep(60)
-                current_model_idx = 0 # 最初に戻って再開
-                print("    [Resume] Retrying...")
-                continue 
-
-            active_model = models_list[current_model_idx]
+    with tqdm(total=total_batches, desc="    Translating", leave=False, unit="batch") as batch_pbar:
+        for i in range(0, len(items), BATCH_SIZE):
+            batch = dict(items[i : i + BATCH_SIZE])
+            input_text = json.dumps(batch, ensure_ascii=False)
+            prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
             
-            result_json, status_code = call_gemini_rest(active_model, api_key, prompt)
+            batch_success = False
             
-            # 成功 (200)
-            if status_code == 200 and result_json and 'candidates' in result_json:
-                try:
+            while True:
+                if current_model_idx >= len(models_list):
+                    batch_pbar.write("    [Wait] All models busy. Cooling down for 60s...")
+                    time.sleep(60)
+                    current_model_idx = 0 
+                    batch_pbar.write("    [Resume] Retrying...")
+                    continue 
+
+                active_model = models_list[current_model_idx]
+                
+                result_json, status_code = call_gemini_rest(active_model, api_key, prompt)
+                
+                if status_code == 200 and result_json and 'candidates' in result_json:
                     raw_text = result_json['candidates'][0]['content']['parts'][0]['text']
-                    translated_batch = json.loads(raw_text)
-                    for k, original_v in batch.items():
-                        if k in translated_batch and is_valid_translation(translated_batch[k]):
-                            cache[original_v] = translated_batch[k]
+                    # ここで抽出関数を使う
+                    translated_batch = extract_json_from_response(raw_text)
                     
-                    time.sleep(REQUEST_INTERVAL)
-                    batch_success = True
-                    break
-                except:
-                    print(f"    [Warn] {active_model} invalid JSON. Switching...")
+                    if translated_batch:
+                        for k, original_v in batch.items():
+                            if k in translated_batch and is_valid_translation(translated_batch[k]):
+                                cache[original_v] = translated_batch[k]
+                        time.sleep(REQUEST_INTERVAL)
+                        batch_success = True
+                        break
+                    else:
+                        batch_pbar.write(f"    [Warn] {active_model} invalid JSON structure. Switching...")
+                        current_model_idx += 1
+                        time.sleep(1)
+                
+                elif status_code == 429:
+                    batch_pbar.write(f"    [Limit] {active_model} (429). Switching...")
+                    current_model_idx += 1
+                    time.sleep(1)
+
+                else:
+                    batch_pbar.write(f"    [Error {status_code}] {active_model} failed. Switching...")
                     current_model_idx += 1
                     time.sleep(1)
             
-            # レート制限 (429)
-            elif status_code == 429:
-                print(f"    [Limit] {active_model} (429). Switching model...")
-                current_model_idx += 1
-                time.sleep(1)
-
-            # その他のエラー
-            else:
-                print(f"    [Error {status_code}] {active_model} failed. Switching...")
-                current_model_idx += 1
-                time.sleep(1)
-        
-        if not batch_success:
-            return False
+            if not batch_success:
+                return False
+            
+            batch_pbar.update(1)
 
     return True
 
@@ -196,7 +207,8 @@ def call_lmstudio_rest(prompt):
         "stream": False
     }
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=600)
+        # LM Studioは遅い場合があるので少し長めに待つが、タイムアウトしたら諦める
+        response = requests.post(url, headers=headers, json=data, timeout=300)
         if response.status_code != 200: return None
         return response.json()
     except: return None
@@ -205,25 +217,33 @@ def translate_lmstudio_batch(key_value_dict, cache):
     to_translate = {k: v for k, v in key_value_dict.items() if v not in cache and str(v).strip() and not str(v).replace(".", "").isdigit()}
     if not to_translate: return True
     items = list(to_translate.items())
-    for i in range(0, len(items), BATCH_SIZE):
-        batch = dict(items[i : i + BATCH_SIZE])
-        input_text = json.dumps(batch, ensure_ascii=False)
-        prompt = f"""Translate the values in the following JSON to Japanese. Keys must remain unchanged. Output strictly valid JSON. Input: {input_text}"""
-        result = call_lmstudio_rest(prompt)
-        if result and 'choices' in result:
-            try:
+    
+    total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
+    with tqdm(total=total_batches, desc="    Translating", leave=False, unit="batch") as batch_pbar:
+        for i in range(0, len(items), BATCH_SIZE):
+            batch = dict(items[i : i + BATCH_SIZE])
+            input_text = json.dumps(batch, ensure_ascii=False)
+            prompt = f"""Translate the values in the following JSON to Japanese. Keys must remain unchanged. Output strictly valid JSON. Input: {input_text}"""
+            
+            result = call_lmstudio_rest(prompt)
+            if result and 'choices' in result:
                 raw_text = result['choices'][0]['message']['content']
-                raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-                translated_batch = json.loads(raw_text)
-                for k, original_v in batch.items():
-                    if k in translated_batch and is_valid_translation(translated_batch[k]):
-                        cache[original_v] = translated_batch[k]
-            except:
-                print(" [Warn] LM Studio JSON parse failed, skipping block.")
-                return False
-        else:
-            print(" [Warn] No response from LM Studio.")
-            return False
+                
+                # ここで抽出関数を使う（<think>タグ対策）
+                translated_batch = extract_json_from_response(raw_text)
+                
+                if translated_batch:
+                    for k, original_v in batch.items():
+                        if k in translated_batch and is_valid_translation(translated_batch[k]):
+                            cache[original_v] = translated_batch[k]
+                else:
+                    # 失敗した内容を少し表示してデバッグしやすくする
+                    sample = raw_text[:50].replace('\n', ' ')
+                    batch_pbar.write(f" [Warn] LM Studio JSON parse failed. Start with: {sample}...")
+            else:
+                batch_pbar.write(" [Warn] No response from LM Studio.")
+            
+            batch_pbar.update(1)
     return True
 
 # --- 共通処理 ---
@@ -309,45 +329,26 @@ def select_gemini_models(api_key, manual_mode=False):
             if 0 <= idx < len(models): return [models[idx]]
         except: pass
     
-    # 優先順位リスト作成ロジック
     selected_models = []
-    
-    # 1. Liteモデルが存在するかチェック（ユーザー要望：LiteならLiteだけで固めたい）
     lite_candidates = [m for m in models if "lite" in m.lower()]
     
     if lite_candidates:
-        # Liteが見つかった場合、これらのみを使用する
-        # まず優先度の高いLiteを追加
         priority_lite = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite"]
         for p in priority_lite:
             if p in models:
                 selected_models.append(p)
-        
-        # その他のLiteモデル（プレビュー版など）も追加
         for m in lite_candidates:
             if m not in selected_models:
                 selected_models.append(m)
-                
         print(f"\n[INFO] Lite Mode Active: Restricting fallbacks to {len(selected_models)} Lite models.")
-        
     else:
-        # Liteがない場合のみ、通常のFlash系にフォールバック
-        priority_order = [
-            "gemini-2.0-flash-exp",
-            "gemini-1.5-flash",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-flash-8b"
-        ]
+        priority_order = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-8b"]
         for p in priority_order:
-            if p in models:
-                selected_models.append(p)
-        
+            if p in models: selected_models.append(p)
         for m in models:
-            if m not in selected_models and "flash" in m:
-                selected_models.append(m)
+            if m not in selected_models and "flash" in m: selected_models.append(m)
 
-    if not selected_models and models:
-        selected_models = [models[0]]
+    if not selected_models and models: selected_models = [models[0]]
         
     print(f"[INFO] Model Priority: {' -> '.join(selected_models[:3])} ...\n")
     return selected_models
