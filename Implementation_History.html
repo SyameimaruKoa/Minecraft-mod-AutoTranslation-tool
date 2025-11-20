@@ -154,18 +154,39 @@
 
         <div class="timeline">
 
+            <!-- Version 3.8 -->
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.8 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">PowerShell Migration & Adaptive Optimization</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>PowerShell完全移行:</strong>
+                        従来のバッチファイルを廃止し、<code>start.ps1</code> と起動用ランチャー <code>Run_Translator.bat</code>
+                        に刷新。文字化けを解消し、日本語UIを完全サポート。</li>
+                    <li><span class="tag tag-new">New</span> <strong>モデル別最適化:</strong> Gemini 2.5 Lite（RPD重視・小バッチ高速回転）と
+                        2.0 Lite（TPM重視・大バッチ節約）の特性に合わせ、バッチサイズと待機時間を動的に制御するロジックを実装。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>詳細進捗表示:</strong>
+                        翻訳中のプログレスバーに、進捗率（％）と完了予想時間（ETA）を追加。待機時間も含めた正確な見積もりを表示。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>互換性向上:</strong> Windows PowerShell 5.1
+                        以前の環境でも正しく動作するよう、OS判定ロジックを強化。</li>
+                </ul>
+            </div>
+
             <!-- Version 3.7 -->
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.7 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.7</span>
                     <span class="release-desc">Gemini 2.5 Preview & Gemma 3 Integration</span>
                 </div>
                 <ul>
                     <li><span class="tag tag-new">New</span> <strong>最新モデル対応:</strong>
                         <code>gemini-2.5-flash-lite-preview-09-2025</code> および
-                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。</li>
+                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。
+                    </li>
                     <li><span class="tag tag-new">New</span> <strong>Gemma 3 サポート:</strong> Google API経由で利用可能な
-                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。</li>
+                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。
+                    </li>
                     <li><span class="tag tag-update">Update</span> <strong>優先順位の最適化:</strong> 最新のLiteモデルとGemma
                         3を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。</li>
                 </ul>

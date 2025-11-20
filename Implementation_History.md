@@ -2,7 +2,14 @@
 
 Minecraft Mod Auto Translator (AI Powered)
 
-**v3.7** (Latest)**Gemini 2.5 Preview & Gemma 3 Integration**
+**v3.8** (Latest)**PowerShell Migration & Adaptive Optimization**
+
+- **New** **PowerShell 完全移行:** 従来のバッチファイルを廃止し、`start.ps1` と起動用ランチャー `Run_Translator.bat` に刷新。文字化けを解消し、日本語 UI を完全サポート。
+- **New** **モデル別最適化:** Gemini 2.5 Lite（RPD 重視・小バッチ高速回転）と 2.0 Lite（TPM 重視・大バッチ節約）の特性に合わせ、バッチサイズと待機時間を動的に制御するロジックを実装。
+- **Update** **詳細進捗表示:** 翻訳中のプログレスバーに、進捗率（％）と完了予想時間（ETA）を追加。待機時間も含めた正確な見積もりを表示。
+- **Fix** **互換性向上:** Windows PowerShell 5.1 以前の環境でも正しく動作するよう、OS 判定ロジックを強化。
+
+**v3.7**Gemini 2.5 Preview & Gemma 3 Integration
 
 - **New** **最新モデル対応:** `gemini-2.5-flash-lite-preview-09-2025` および `gemini-2.0-flash-lite-preview-02-05` を優先リストに追加。
 - **New** **Gemma 3 サポート:** Google API 経由で利用可能な `gemma-3` シリーズ（1b ～ 27b）および `gemma-3n` 系モデルを自動選択ロジックに統合。

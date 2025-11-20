@@ -17,6 +17,8 @@ OLLAMA_API_URL = "http://localhost:11434/api/chat"
 LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 
 # 優先モデルリスト（ユーザー指定）
+# デフォルトの優先順位（RPD > TPM > RPM の順）
+# ユーザー要望により 2.0 Lite を Gemma より優先し、Pro を除外
 DEFAULT_PRIORITY = [
     # 1. Gemini 2.5 Lite (RPD 1,000 - 最優先主力)
     "gemini-2.5-flash-lite",
@@ -56,13 +58,13 @@ DEFAULT_PRIORITY = [
     "gemini-flash-latest"
 ]
 
-# 翻訳除外キー（これらは翻訳しない）
+# 翻訳除外キー
 IGNORE_KEYS = [
     "pack.mcmeta", "pack.description", "_comment", 
     "language.name", "language.region", "language.code"
 ]
 
-# エラー検出用キーワード（これらが含まれていたら翻訳失敗とみなして削除・再翻訳する）
+# エラー検出用キーワード
 ERROR_KEYWORDS = [
     "Error 504", "HTTP 429", "Model overloaded", "Internal Server Error",
     "quota exceeded", "Too Many Requests", "Service Unavailable"
@@ -181,7 +183,6 @@ def load_json(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        print(f"警告: JSON読み込みエラー {filepath}: {e}")
         return {}
 
 def save_json(filepath, data):
@@ -189,10 +190,6 @@ def save_json(filepath, data):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-
-def clean_text(text):
-    """Minecraftのカラーコードなどを除去して翻訳しやすくする（簡易版）"""
-    return text
 
 def is_valid_translation(original, translated):
     """翻訳結果が妥当かチェックする（エラーメッセージの混入などを防ぐ）"""
@@ -216,8 +213,15 @@ def clean_cache(cache_data):
         cleaned_count += 1
     
     if cleaned_count > 0:
-        print(f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。これらは再翻訳されます。")
+        print(f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。")
     return cache_data
+
+def format_time(seconds):
+    """秒数を m分s秒 形式に変換"""
+    if seconds < 60:
+        return f"{int(seconds)}秒"
+    else:
+        return f"{int(seconds // 60)}分{int(seconds % 60)}秒"
 
 # --- ファイル解析関連 ---
 
@@ -291,6 +295,7 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
     
     total = len(keys)
     processed = 0
+    start_time = time.time() # 測定開始
 
     for i in range(0, total, batch_size):
         batch_keys = keys[i : i + batch_size]
@@ -337,7 +342,32 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
                 time.sleep(2)
         
         processed += len(batch_keys)
-        print(f"  進捗: {processed}/{total} 行完了...")
+        
+        # 進捗とETAの計算
+        elapsed_time = time.time() - start_time
+        percent = (processed / total) * 100
+        
+        if processed > 0:
+            # 1アイテムあたりの平均時間
+            avg_time_per_item = elapsed_time / processed
+            # 残りアイテム数
+            remaining_items = total - processed
+            # 現在のインターバルも加味したETA計算
+            eta_seconds = remaining_items * avg_time_per_item
+            # 最後のバッチ後の待機時間は不要だが、概算としては含めても良い
+            
+            # より正確にするために、次の待機時間分を足す（ループ継続する場合）
+            if remaining_items > 0:
+                eta_seconds += interval
+            
+            eta_str = format_time(eta_seconds)
+        else:
+            eta_str = "計算中..."
+
+        # プログレスバー表示
+        # \r を使って同じ行を更新したいところだが、ログが見えなくなるので改行する
+        print(f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str}")
+        
         time.sleep(interval)
 
     return translated_results
@@ -349,6 +379,9 @@ def translate_local_llm(text_dict, engine, model_name):
     
     translated_results = {}
     keys = list(text_dict.keys())
+    total = len(keys)
+    processed = 0
+    start_time = time.time()
     
     for i in range(0, len(keys), BATCH_SIZE):
         batch_keys = keys[i : i + BATCH_SIZE]
@@ -384,6 +417,14 @@ def translate_local_llm(text_dict, engine, model_name):
 
         except Exception as e:
             print(f"ローカルLLM通信エラー: {e}")
+            
+        processed += len(batch_keys)
+        elapsed_time = time.time() - start_time
+        if processed > 0:
+            avg = elapsed_time / processed
+            rem = total - processed
+            eta = format_time(rem * avg)
+            print(f"  進捗: {processed}/{total} - 残り予想: {eta}")
 
     return translated_results
 
