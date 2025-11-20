@@ -3,96 +3,97 @@ setlocal
 chcp 65001 > nul
 
 :: ============================================================
-:: Minecraft Mod Translator Setup & Launcher
+:: Minecraft Mod Translator (Gemini Edition)
 ::
 :: 機能:
-:: 1. Python環境(venv)の自動構築
-:: 2. 必要なライブラリの自動インストール
-:: 3. ユーザーへのフォルダパス質問
-:: 4. 翻訳スクリプトの実行
+:: 1. 環境構築
+:: 2. 翻訳モード選択 (Google vs Gemini)
+:: 3. 実行
+::
+:: ヘルプ: 引数なしで実行すると対話モードになります。
 :: ============================================================
 
 echo.
 echo ========================================================
-echo       Minecraft Mod Auto Translator (Wrapper)
+echo       Minecraft Mod Auto Translator (AI Powered)
 echo ========================================================
 echo.
 
-:: Pythonの確認
+:: Pythonチェック
 python --version > nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Pythonが見つかりません。インストールしてください。
-    echo インストール時に "Add Python to PATH" にチェックを入れるのを忘れないように。
+    echo [ERROR] Pythonが見つかりません。
     pause
     exit /b
 )
 
-:: 仮想環境(venv)の確認と作成
+:: 仮想環境作成
 if not exist "venv" (
-    echo [INFO] 初回起動を検知しました。仮想環境を作成中...
+    echo [INFO] 仮想環境を作成中...
     python -m venv venv
-    if %errorlevel% neq 0 (
-        echo [ERROR] 仮想環境の作成に失敗しました。
-        pause
-        exit /b
+)
+
+call venv\Scripts\activate
+
+:: ライブラリインストール (Gemini対応)
+:: google-generativeai を追加
+pip show google-generativeai > nul 2>&1
+if %errorlevel% neq 0 (
+    echo [INFO] 必要なライブラリをインストール中...
+    pip install deep-translator tqdm google-generativeai
+)
+
+echo.
+echo 翻訳モードを選択するのじゃ。
+echo.
+echo   [1] Google翻訳 (無料・キー不要・精度そこそこ)
+echo   [2] Gemini AI翻訳 (要APIキー・高精度・文脈理解あり)
+echo.
+set /p MODE="選択 (1 or 2) > "
+
+set ENGINE=google
+set KEY_OPT=
+set API_KEY=
+
+if "%MODE%"=="2" (
+    set ENGINE=gemini
+    echo.
+    echo Gemini APIキーを入力するのじゃ。
+    echo (入力しても画面には表示されるが、気にせずペーストせよ)
+    echo キーは https://aistudio.google.com/app/apikey から取得できるぞ。
+    set /p API_KEY="API Key > "
+)
+
+:: キーが空ならGoogleに戻す
+if "%ENGINE%"=="gemini" (
+    if "%API_KEY%"=="" (
+        echo [WARNING] キーが空じゃぞ。Googleモードに切り替える。
+        set ENGINE=google
     )
 )
 
-:: 仮想環境のアクティブ化
-call venv\Scripts\activate
-
-:: 依存ライブラリのインストール確認
-pip show deep-translator > nul 2>&1
-if %errorlevel% neq 0 (
-    echo [INFO] 必要なライブラリをインストールしています...
-    pip install deep-translator tqdm
-)
-
 echo.
-echo 環境準備完了じゃ。翻訳を開始するぞ。
-echo.
-
-:: ユーザー入力（ドラッグ＆ドロップ対応）
 :ASK_DIR
-echo 翻訳したいModが入っているフォルダのパスを入力（またはドラッグ＆ドロップ）してください。
+echo Modフォルダのパスを入力（ドラッグ＆ドロップ可）:
 set /p MOD_DIR="> "
-
-:: 入力パスのダブルクォート除去処理
 set MOD_DIR=%MOD_DIR:"=%
 
-if not exist "%MOD_DIR%" (
-    echo [ERROR] 指定されたフォルダが見つかりません。もう一度入力してください。
-    goto ASK_DIR
-)
+if not exist "%MOD_DIR%" goto ASK_DIR
 
 echo.
-echo 出力するリソースパックの名前を入力してください（例: MyJpPack）。
-echo 何も入力せずにEnterを押すと "Generated_Pack" になります。
+echo 出力リソースパック名 (空欄でデフォルト):
 set /p OUT_NAME="> "
-
-if "%OUT_NAME%"=="" set OUT_NAME=Generated_Pack
-
-echo.
-echo --------------------------------------------------------
-echo [設定確認]
-echo 入力: %MOD_DIR%
-echo 出力: %OUT_NAME%
-echo.
-echo Modファイル本体は削除・変更されません。
-echo 翻訳リソースパックのみが生成されます。
-echo --------------------------------------------------------
-echo.
-pause
-
-:: Pythonスクリプト実行
-:: ここで --reset をつけると進捗をリセット、つけなければ続きから
-python mod_translator.py -i "%MOD_DIR%" -o "%OUT_NAME%"
+if "%OUT_NAME%"=="" set OUT_NAME=Generated_Pack_%ENGINE%
 
 echo.
-if %errorlevel% equ 0 (
-    echo すべて完了じゃ！ "%OUT_NAME%" フォルダを resourcepacks に入れるのじゃ。
+echo 開始するぞ... Engine: %ENGINE%
+echo.
+
+if "%ENGINE%"=="gemini" (
+    python mod_translator.py -i "%MOD_DIR%" -o "%OUT_NAME%" --engine gemini --key "%API_KEY%"
 ) else (
-    echo エラーが発生したようじゃ。ログを確認せよ。
+    python mod_translator.py -i "%MOD_DIR%" -o "%OUT_NAME%" --engine google
 )
 
+echo.
 pause
