@@ -12,10 +12,12 @@ DEFAULT_FORMAT_FALLBACK = 34
 BATCH_SIZE = 10
 REQUEST_INTERVAL = 5.0
 
+# エラー判定用キーワード（これらが含まれていたら翻訳失敗とみなす）
 ERROR_KEYWORDS = [
-    "Error 504", "Server Error", "That’s an error",
+    "Server Error", "That’s an error", 
     "429 Too Many Requests", "MYMEMORY WARNING",
-    "Error 502", "Bad Gateway"
+    "Bad Gateway", "Internal Server Error",
+    "Service Unavailable", "Gateway Time-out"
 ]
 
 # デフォルトの優先順位（RPD > TPM > RPM の順）
@@ -64,10 +66,20 @@ DEFAULT_PRIORITY = [
 # ==========================================
 
 def is_valid_translation(text):
+    """翻訳結果がエラーメッセージでないか、正規表現で厳重にチェック"""
     if not text: return True
     text_str = str(text)
+    
+    # 1. キーワードチェック
     for kw in ERROR_KEYWORDS:
         if kw in text_str: return False
+        
+    # 2. 正規表現チェック (Error 504, Error 500 等のパターン)
+    if re.search(r'Error\s+\d{3}', text_str, re.IGNORECASE):
+        return False
+    if re.search(r'HTTP\s+\d{3}', text_str, re.IGNORECASE):
+        return False
+        
     return True
 
 def load_json(filepath, default_type=dict):
@@ -76,6 +88,8 @@ def load_json(filepath, default_type=dict):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            
+            # キャッシュファイル読み込み時にゴミ掃除を行う
             if isinstance(data, dict) and "trans_cache.json" in filepath:
                 clean_data = {}
                 dirty_count = 0
@@ -84,8 +98,10 @@ def load_json(filepath, default_type=dict):
                         clean_data[k] = v
                     else:
                         dirty_count += 1
+                
                 if dirty_count > 0:
-                    pass 
+                    # pass # ログがうるさいので抑制
+                    pass
                 return clean_data
             return data
         except:
@@ -167,11 +183,16 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
     total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     current_model_idx = 0
     
+    # プロンプト微調整: カタカナ語になりすぎないように指示を追加
+    system_instruction = "Translate Minecraft Mod JSON to Japanese. Keep format codes (§a, %s) unchanged. Use natural Japanese terms for items where possible."
+
     with tqdm(total=total_batches, desc="    Translating", leave=False, unit="batch") as batch_pbar:
         for i in range(0, len(items), BATCH_SIZE):
             batch = dict(items[i : i + BATCH_SIZE])
             input_text = json.dumps(batch, ensure_ascii=False)
-            prompt = f"""Translate Minecraft Mod JSON to Japanese. Output JSON only. No markdown. JSON: {input_text}"""
+            prompt = f"""{system_instruction}
+            Output JSON only. No markdown.
+            JSON: {input_text}"""
             
             batch_success = False
             
@@ -193,8 +214,11 @@ def translate_gemini_batch_rest(key_value_dict, models_list, api_key, cache):
                     
                     if translated_batch:
                         for k, original_v in batch.items():
-                            if k in translated_batch and is_valid_translation(translated_batch[k]):
-                                cache[original_v] = translated_batch[k]
+                            if k in translated_batch:
+                                t_val = translated_batch[k]
+                                if is_valid_translation(t_val):
+                                    cache[original_v] = t_val
+                                    
                         time.sleep(REQUEST_INTERVAL)
                         batch_success = True
                         break
@@ -287,6 +311,40 @@ def detect_pack_format(jar_paths):
     if not formats: return DEFAULT_FORMAT_FALLBACK
     return collections.Counter(formats).most_common(1)[0][0]
 
+# 【新機能】出力済みファイルの浄化
+def clean_existing_output(output_dir):
+    """出力ディレクトリ内の全ての json ファイルをスキャンし、エラー文字列があれば削除する"""
+    cleaned_count = 0
+    for root, _, files in os.walk(output_dir):
+        for file in files:
+            if file.endswith(".json"):
+                path = os.path.join(root, file)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    modified = False
+                    if isinstance(data, dict):
+                        # 辞書の値をチェック
+                        keys_to_remove = []
+                        for k, v in data.items():
+                            if not is_valid_translation(v):
+                                keys_to_remove.append(k)
+                                modified = True
+                        
+                        for k in keys_to_remove:
+                            del data[k]
+                            cleaned_count += 1
+
+                    if modified:
+                        with open(path, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False, indent=4)
+                except:
+                    continue
+    
+    if cleaned_count > 0:
+        print(f"[Info] Cleaned {cleaned_count} error entries from existing output files.")
+
 def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models_list=None, force=False):
     try:
         with zipfile.ZipFile(jar_path, 'r') as z:
@@ -303,35 +361,75 @@ def process_jar(jar_path, output_dir, cache, engine, api_key=None, active_models
                 with z.open(en_file_path) as src:
                     try: en_data = json.load(src)
                     except: continue
-                ja_file_path = find_ja_path(en_file_path)
-                final_data = {}
-                if ja_file_path in all_files:
-                    try:
-                        with z.open(ja_file_path) as ja_src:
-                            final_data = json.load(ja_src)
-                    except: pass
-                keys_to_translate = {}
-                for k, v in en_data.items():
-                    should = False
-                    if force: should = True
-                    elif k not in final_data: should = True
-                    elif final_data[k] == v: should = True 
-                    if should: keys_to_translate[k] = v
-                    else:
-                        if k not in final_data: final_data[k] = v
-                if not keys_to_translate: continue
+                
+                # 既存の ja_jp.json を読み込む（あれば）
+                ja_file_path_in_jar = find_ja_path(en_file_path)
+                
+                # 出力先の ja_jp.json パス
                 target_dir = os.path.join(output_dir, "assets", mod_id, "lang")
                 os.makedirs(target_dir, exist_ok=True)
+                target_ja_path = os.path.join(target_dir, "ja_jp.json")
                 
+                final_data = {}
+                
+                # 1. Mod内の既存日本語をロード（あれば）
+                if ja_file_path_in_jar in all_files:
+                    try:
+                        with z.open(ja_file_path_in_jar) as ja_src:
+                            mod_ja_data = json.load(ja_src)
+                            final_data.update(mod_ja_data)
+                    except: pass
+
+                # 2. すでに生成済みの ja_jp.json があればロードしてマージ（続きから）
+                if os.path.exists(target_ja_path):
+                    try:
+                        with open(target_ja_path, 'r', encoding='utf-8') as existing_f:
+                            existing_data = json.load(existing_f)
+                            final_data.update(existing_data)
+                    except: pass
+                
+                # 翻訳対象の抽出
+                keys_to_translate = {}
+                for k, v in en_data.items():
+                    should_translate = False
+                    
+                    if force: 
+                        should_translate = True
+                    elif k not in final_data: 
+                        should_translate = True
+                    # 既に翻訳済みだが、エラー文字列が含まれている場合は再翻訳対象にする
+                    elif not is_valid_translation(final_data[k]):
+                        should_translate = True
+                    # 翻訳が原文と同じ場合も翻訳対象（オプション次第だが、今回はエラー除去優先）
+                    
+                    if should_translate:
+                        keys_to_translate[k] = v
+                    else:
+                        # 翻訳不要なら既存の値を維持
+                        pass
+
+                if not keys_to_translate: continue
+
                 if engine == "gemini" and active_models_list:
                     translate_gemini_batch_rest(keys_to_translate, active_models_list, api_key, cache)
                 elif engine == "lmstudio":
                     translate_lmstudio_batch(keys_to_translate, cache)
                 
                 for k, v in keys_to_translate.items():
-                    if v in cache: final_data[k] = cache[v]
-                    else: final_data[k] = translate_google_single(v, translator_google, cache)
-                with open(os.path.join(target_dir, "ja_jp.json"), 'w', encoding='utf-8') as out:
+                    translated_val = v
+                    if v in cache: 
+                        translated_val = cache[v]
+                    else: 
+                        translated_val = translate_google_single(v, translator_google, cache)
+                    
+                    # 最終チェック
+                    if is_valid_translation(translated_val):
+                        final_data[k] = translated_val
+                    else:
+                        if v in cache: del cache[v]
+                        final_data[k] = v # 原文に戻す
+
+                with open(target_ja_path, 'w', encoding='utf-8') as out:
                     json.dump(final_data, out, ensure_ascii=False, indent=4)
         return True
     except: return False
@@ -374,7 +472,6 @@ def select_gemini_models(api_key, manual_mode=False, priority_str=None, lite_onl
     if not lite_only:
         for m in models:
             if m not in selected_models and "flash" in m:
-                # Proモデルは自動追加しないように除外 (user request)
                 if "pro" not in m.lower():
                     selected_models.append(m)
 
@@ -392,7 +489,6 @@ def select_gemini_models(api_key, manual_mode=False, priority_str=None, lite_onl
             return None
 
     if not selected_models and models:
-        # 最後の手段でもProは避ける努力をする
         non_pro = [m for m in models if "pro" not in m.lower()]
         if non_pro:
              selected_models = [non_pro[0]]
@@ -479,7 +575,15 @@ def main():
             json.dump({"pack": {"pack_format": fmt, "description": f"Translated by {args.engine}"}}, f, indent=4)
     cache_file_path = os.path.join(args.output, CACHE_FILENAME)
     progress_file_path = os.path.join(args.output, PROGRESS_FILENAME)
+    
+    # 1. キャッシュファイルの浄化
     cache = load_json(cache_file_path, dict)
+    save_json(cache_file_path, cache)
+    
+    # 2. 出力済みファイルの浄化
+    print("[Info] Checking existing output files for errors...")
+    clean_existing_output(args.output)
+
     if args.reset and os.path.exists(progress_file_path): os.remove(progress_file_path)
     processed = load_json(progress_file_path, list)
     target_jars = [p for p in full_jar_paths if os.path.basename(p) not in processed]
