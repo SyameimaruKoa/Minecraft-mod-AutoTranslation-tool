@@ -46,14 +46,9 @@ DEFAULT_PRIORITY = [
     # 1. Gemini 2.5 Flash-Lite (RPD 1,000 / RPM 15)
     # バランス最高。まずはこれから消費する。
     "gemini-2.5-flash-lite",
-    "gemini-2.5-flash-lite-preview-09-2025",
-    "gemini-2.5-flash-lite-preview",
     # 2. Gemini 2.0 Flash-Lite (RPD 200 / RPM 30)
     # 速度は最速だが、回数制限がきつい。2.5 Liteが尽きたら、バッチサイズ特大で回す。
     "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite-001",
-    "gemini-2.0-flash-lite-preview",
-    "gemini-2.0-flash-lite-preview-02-05",
     # 3. Gemma 3系 (RPD 14,400 / TPM 15,000)
     # Lite系が尽きた後の長期戦用
     "gemma-3n-e2b-it",
@@ -66,15 +61,13 @@ DEFAULT_PRIORITY = [
     # 4. Gemini 2.5 Flash (RPD 250 / RPM 10)
     # 標準モデル。速度はそこそこ。
     "gemini-2.5-flash",
-    "gemini-2.5-flash-preview-09-2025",
     # 5. その他・旧世代
     "gemini-2.0-flash",
-    "gemini-2.0-flash-exp",
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b",
 ]
 
-# (中略)
+# --- ヘルパー関数 ---
 
 
 def get_model_settings(model_name):
@@ -140,7 +133,6 @@ def get_available_gemini_models(api_key):
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            # "models/gemini-..." という形式で返ってくるので "gemini-..." だけ抽出
             models = [m["name"].replace("models/", "") for m in data.get("models", [])]
             return models
         else:
@@ -151,42 +143,150 @@ def get_available_gemini_models(api_key):
         return []
 
 
-def select_best_model(api_key, lite_only=False):
-    """優先順位リストと利用可能なモデルを照らし合わせて、最適なモデルを選択する"""
+def get_prioritized_models(api_key, lite_only=False):
+    """
+    優先順位リストと利用可能なモデルを照らし合わせて、
+    利用可能なモデルのリストを優先度順に返す。
+    """
     print("情報: 利用可能なGeminiモデルを探索中...")
     available_models = get_available_gemini_models(api_key)
 
     if not available_models:
-        # API通信に失敗した場合は、優先リストのトップを強制的に返す（イチかバチか）
-        fallback = DEFAULT_PRIORITY[0]
+        fallback = [DEFAULT_PRIORITY[0]]
         print(
-            f"警告: モデル一覧が取得できなかったため、デフォルトの {fallback} を使用します。"
+            f"警告: モデル一覧が取得できなかったため、デフォルトの {fallback[0]} を使用します。"
         )
         return fallback
 
-    # 利用可能なモデルを表示（デバッグ用）
-    # print(f"DEBUG: Available models: {available_models}")
+    valid_models = []
 
+    # 優先リスト順にチェック
     for candidate in DEFAULT_PRIORITY:
-        # Lite限定モードなら "lite" が含まれていないモデルはスキップ
         if lite_only and "lite" not in candidate.lower():
             continue
-
-        # 候補が利用可能リストに存在するかチェック
         if candidate in available_models:
-            return candidate
+            valid_models.append(candidate)
 
-    # 見つからなかった場合
-    if lite_only:
+    if not valid_models:
+        if lite_only:
+            print(
+                "警告: Liteモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。"
+            )
+            return ["gemini-2.5-flash-lite"]
+        else:
+            print(
+                "警告: 優先リスト内のモデルが見つかりませんでした。gemini-2.0-flash を使用します。"
+            )
+            return ["gemini-2.0-flash"]
+
+    print(f"情報: {len(valid_models)} 個の有効なモデルが見つかりました。")
+    return valid_models
+
+
+class ModelSelector:
+    """
+    モデルの選択、切り替え、無効化、復帰を管理するクラス
+    """
+
+    def __init__(self, models):
+        self.models = models  # 優先度順のモデルリスト
+        self.current_idx = 0
+        self.disabled_models = set()  # 使用不可になったモデル
+        self.failure_counts = {m: 0 for m in models}  # モデルごとの連続失敗回数
+        self.fallback_start_time = None  # フォールバック開始時刻
+
+    def get_current_model(self):
+        """現在使用すべきモデルを返す。必要に応じて復帰やスキップを行う。"""
+
+        # 1. 復帰チェック: フォールバック中で30分経過していれば、優先度の高いモデルへの復帰を試みる
+        if self.fallback_start_time and (time.time() - self.fallback_start_time > 1800):
+            self._try_recover_priority()
+
+        # 2. 無効なモデルをスキップして、使えるモデルを探す
+        original_idx = self.current_idx
+        while self.current_idx < len(self.models):
+            model = self.models[self.current_idx]
+            if model not in self.disabled_models:
+                return model
+            self.current_idx += 1
+
+        # 3. もし最後まで到達してしまったら（全滅）
+        # 一時的に全モデルの無効化を解除して、最初から再試行させる（無限ループ防止）
         print(
-            "警告: Liteモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。"
+            "警告: 全てのモデルが使用不可になりました。制限をリセットして再試行します。"
         )
-        return "gemini-2.5-flash-lite"
-    else:
-        print(
-            "警告: 優先リスト内のモデルが見つかりませんでした。gemini-2.0-flash を使用します。"
-        )
-        return "gemini-2.0-flash"
+        self.disabled_models.clear()
+        self.failure_counts = {m: 0 for m in self.models}
+        self.current_idx = 0
+        self.fallback_start_time = None
+        return self.models[0]
+
+    def _try_recover_priority(self):
+        """より優先度の高い（インデックスが小さい）モデルが使えるか確認し、戻す"""
+        best_available_idx = -1
+        for i, m in enumerate(self.models):
+            if m not in self.disabled_models:
+                best_available_idx = i
+                break
+
+        if best_available_idx != -1 and best_available_idx < self.current_idx:
+            print(
+                f"情報: 1分経過。優先度の高いモデル [{self.models[best_available_idx]}] に復帰を試みます。"
+            )
+            self.current_idx = best_available_idx
+            self.fallback_start_time = None
+            # 復帰したモデルの失敗カウントはリセットしておく
+            self.failure_counts[self.models[best_available_idx]] = 0
+
+    def report_success(self):
+        """成功を報告。カウントをリセットする。"""
+        model = self.models[self.current_idx]
+        self.failure_counts[model] = 0
+
+        # もし現在、最高優先度のモデルを使っているなら、フォールバックタイマーをクリア
+        if self.current_idx == 0 or all(
+            self.models[i] in self.disabled_models for i in range(self.current_idx)
+        ):
+            self.fallback_start_time = None
+
+    def report_failure(self):
+        """
+        失敗を報告。
+        Returns:
+            str: "continue" (そのまま再試行), "switched" (モデル切り替え), "disabled" (無効化して切り替え)
+        """
+        if self.current_idx >= len(self.models):
+            return "continue"
+
+        model = self.models[self.current_idx]
+        self.failure_counts[model] += 1
+        count = self.failure_counts[model]
+
+        # 10回連続失敗 -> 使用不可
+        if count >= 10:
+            print(
+                f"エラー: モデル [{model}] は10回連続で失敗したため、使用不可フラグを立てます。"
+            )
+            self.disabled_models.add(model)
+            self._switch_to_next()
+            return "disabled"
+
+        # 3回連続失敗 -> 一時的に次へ
+        if count >= 3:
+            print(
+                f"警告: モデル [{model}] で連続エラー({count}回)。次のモデルへ切り替えます。"
+            )
+            self._switch_to_next()
+            return "switched"
+
+        return "continue"
+
+    def _switch_to_next(self):
+        """次のモデルへインデックスを進める"""
+        self.current_idx += 1
+        # 初めてフォールバックに入った場合のみ時刻を記録
+        if self.fallback_start_time is None:
+            self.fallback_start_time = time.time()
 
 
 # --- ユーティリティ関数 ---
@@ -324,30 +424,34 @@ def translate_google_batch(text_list):
         return text_list  # 失敗時は原文を返す
 
 
-def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
-    """Gemini APIを使用した翻訳（動的バッチサイズ・進捗表示対応）"""
+def translate_with_gemini(text_dict, api_key, selector):
+    """
+    Gemini APIを使用した翻訳（ModelSelectorによる動的制御版）
+    """
     if not text_dict:
         return {}
 
-    # モデル設定の取得
-    batch_size, interval = get_model_settings(model_name)
-    print(
-        f"情報: モデル [{model_name}] 設定 -> バッチサイズ: {batch_size}行, 待機時間: {interval}秒"
-    )
-
     translated_results = {}
     keys = list(text_dict.keys())
-
     total = len(keys)
-    processed = 0
-    start_time = time.time()  # 測定開始
+    current_idx = 0
 
-    # バッチ処理ループ
-    for i in range(0, total, batch_size):
-        batch_keys = keys[i : i + batch_size]
+    start_time = time.time()
+
+    # 最初のモデルを表示
+    print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
+
+    while current_idx < total:
+        # 1. モデル決定（1分経過復帰チェック等はここで行われる）
+        current_model = selector.get_current_model()
+
+        # 2. モデルに応じた設定取得
+        batch_size, interval = get_model_settings(current_model)
+
+        # 3. バッチ切り出し
+        batch_keys = keys[current_idx : current_idx + batch_size]
         batch_dict = {k: text_dict[k] for k in batch_keys}
 
-        # プロンプト作成
         prompt = (
             "あなたはMinecraftのMod翻訳の専門家です。以下のJSONオブジェクトの値を日本語に翻訳してください。\n"
             "Minecraft特有の用語（Redstone, Mobなど）は文脈に合わせて適切に訳してください。\n"
@@ -356,11 +460,14 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
             f"{json.dumps(batch_dict, ensure_ascii=False)}"
         )
 
-        # リトライロジック
-        max_retries = 3
-        for attempt in range(max_retries):
+        # バッチ内リトライループ
+        batch_success = False
+        retry_count = 0
+        max_retries = 2  # ネットワークエラー等の単純リトライ数
+
+        while not batch_success:
             try:
-                url = GEMINI_API_URL.format(model_name) + f"?key={api_key}"
+                url = GEMINI_API_URL.format(current_model) + f"?key={api_key}"
                 headers = {"Content-Type": "application/json"}
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
@@ -370,56 +477,82 @@ def translate_with_gemini(text_dict, api_key, model_name, lite_only=False):
                 response = requests.post(url, headers=headers, json=payload, timeout=60)
 
                 if response.status_code == 200:
-                    result_json = response.json()
                     try:
+                        result_json = response.json()
                         content_text = result_json["candidates"][0]["content"]["parts"][
                             0
                         ]["text"]
                         translated_batch = json.loads(content_text)
                         translated_results.update(translated_batch)
-                        break  # 成功
+
+                        # 成功報告
+                        selector.report_success()
+                        batch_success = True
+                        current_idx += len(batch_keys)
+
                     except (KeyError, json.JSONDecodeError) as e:
-                        print(f"警告: Gemini応答の解析失敗 (試行 {attempt+1}): {e}")
+                        print(f"警告: Gemini応答の解析失敗: {e}")
+                        retry_count += 1
+                        time.sleep(2)
 
                 elif response.status_code == 429:
-                    print(
-                        f"警告: レート制限 (429) 発生。{interval * 2}秒待機して再試行します..."
-                    )
-                    time.sleep(interval * 2)
+                    print(f"警告: レート制限 (429) 発生。")
+                    action = selector.report_failure()
+
+                    if action in ["switched", "disabled"]:
+                        # モデルが変わったので、今のバッチ処理を中断して
+                        # 外側のループに戻り、新しいモデルで再計算・再試行する
+                        time.sleep(2)
+                        break
+                    else:
+                        # まだ閾値未満なら待機してリトライ
+                        time.sleep(interval * 2)
+
                 else:
                     print(f"APIエラー: {response.status_code} - {response.text}")
+                    # 429以外のエラーもカウント対象とするか？今回は安全のためカウントしておく
+                    action = selector.report_failure()
+                    if action in ["switched", "disabled"]:
+                        time.sleep(2)
+                        break
+                    time.sleep(2)
 
             except Exception as e:
-                print(f"通信エラー (試行 {attempt+1}): {e}")
+                print(f"通信エラー: {e}")
+                retry_count += 1
                 time.sleep(2)
 
-        processed += len(batch_keys)
+            # 決定的な失敗でない場合のリトライ上限チェック
+            if (
+                not batch_success
+                and retry_count >= max_retries
+                and response.status_code != 429
+            ):
+                print(f"エラー: このバッチの翻訳をスキップします。")
+                current_idx += len(batch_keys)
+                break
 
-        # 進捗とETAの計算
-        elapsed_time = time.time() - start_time
+        # 進捗表示
+        processed = current_idx
         percent = (processed / total) * 100
+        elapsed_time = time.time() - start_time
 
         if processed > 0:
-            # 1アイテムあたりの平均時間
             avg_time_per_item = elapsed_time / processed
-            # 残りアイテム数
             remaining_items = total - processed
-            # 現在のインターバルも加味したETA計算
             eta_seconds = remaining_items * avg_time_per_item
-            # 最後のバッチ後の待機時間は不要だが、概算としては含めても良い
-
-            # より正確にするために、次の待機時間分を足す（ループ継続する場合）
             if remaining_items > 0:
                 eta_seconds += interval
-
             eta_str = format_time(eta_seconds)
         else:
             eta_str = "計算中..."
 
-        # プログレスバー表示
-        # \r を使って同じ行を更新したいところだが、ログが見えなくなるので改行する
-        print(f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str}")
-        time.sleep(interval)
+        print(
+            f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str} - 使用中: {current_model}"
+        )
+
+        if batch_success:
+            time.sleep(interval)
 
     return translated_results
 
@@ -446,7 +579,7 @@ def translate_local_llm(text_dict, engine, model_name):
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "format": "json",  # Ollama supports json format enforcement
+                "format": "json",
             }
 
             response = requests.post(url, json=payload, timeout=120)
@@ -467,9 +600,7 @@ def translate_local_llm(text_dict, engine, model_name):
                     batch_res = json.loads(content)
                     translated_results.update(batch_res)
                 except:
-                    print(
-                        "警告: ローカルLLMの応答がJSONではありませんでした。スキップします。"
-                    )
+                    print("警告: ローカルLLMの応答がJSONではありませんでした。")
             else:
                 print(f"ローカルLLMエラー: {response.status_code}")
 
@@ -500,31 +631,37 @@ class ModTranslator:
         self.lite_only = args.lite_only
         self.force = args.force
 
-        # シェーダーモード判定
         self.is_shader_mode = "shader" in os.path.basename(self.input_dir).lower()
         if self.is_shader_mode:
             print(
                 "情報: フォルダ名に'shader'が含まれているため、シェーダーパック翻訳モードで動作します。"
             )
 
-        # キャッシュとログのパス設定
         os.makedirs(self.output_dir, exist_ok=True)
         self.cache_file = os.path.join(self.output_dir, "trans_cache.json")
         self.log_file = os.path.join(self.output_dir, "progress_log.json")
 
         self.cache = load_json(self.cache_file)
-        self.cache = clean_cache(self.cache)  # 起動時に汚染データをクリーニング
+        self.cache = clean_cache(self.cache)
 
-        # モデルの決定（Geminiの場合）
+        # セレクターの初期化
+        self.selector = None
+
         if self.engine == "gemini":
-            if not self.model_name:
-                # 指定がない場合は自動探索
-                if self.api_key:
-                    self.model_name = select_best_model(self.api_key, self.lite_only)
+            if self.api_key:
+                if self.model_name:
+                    # ユーザー指定時はそのモデル1つだけのリスト
+                    models = [self.model_name]
+                    print(f"使用モデル (固定): {self.model_name}")
                 else:
-                    print("エラー: Geminiを使用するにはAPIキーが必要です。")
-                    exit(1)
-            print(f"使用モデル: {self.model_name}")
+                    # 自動探索
+                    models = get_prioritized_models(self.api_key, self.lite_only)
+                    print(f"優先モデルリスト: {models}")
+
+                self.selector = ModelSelector(models)
+            else:
+                print("エラー: Geminiを使用するにはAPIキーが必要です。")
+                exit(1)
 
     def run(self):
         print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
@@ -538,17 +675,14 @@ class ModTranslator:
             file_path = os.path.join(self.input_dir, filename)
             print(f"\n[{idx+1}/{total_files}] 処理中: {filename}")
 
-            # 言語ファイル抽出
             lang_files = extract_lang_files(file_path, self.is_shader_mode)
             if not lang_files:
                 print("  -> 言語ファイルが見つかりませんでした。スキップ。")
                 continue
 
-            # バージョン検知
             pack_format = detect_pack_format(file_path)
 
             for lang_path, content in lang_files.items():
-                # 翻訳が必要な項目を抽出（キャッシュにあるものはスキップ）
                 to_translate = {}
                 for k, v in content.items():
                     if k in IGNORE_KEYS or not isinstance(v, str):
@@ -567,23 +701,20 @@ class ModTranslator:
                 else:
                     print(f"  -> 翻訳対象: {len(to_translate)} 項目")
 
-                    # 翻訳実行
                     new_translations = {}
                     if self.engine == "google":
                         keys = list(to_translate.keys())
                         values = list(to_translate.values())
                         translated_values = translate_google_batch(values)
                         for k, tv in zip(keys, translated_values):
-                            new_translations[to_translate[k]] = (
-                                tv  # 原文->訳文でキャッシュ
-                            )
+                            new_translations[to_translate[k]] = tv
 
                     elif self.engine == "gemini":
-                        # AIには key: value のペアで渡して翻訳させる
+                        # セレクターを渡して実行
                         new_translations_raw = translate_with_gemini(
-                            to_translate, self.api_key, self.model_name, self.lite_only
+                            to_translate, self.api_key, self.selector
                         )
-                        # キャッシュ形式に変換 (原文 -> 訳文)
+
                         for k, v in new_translations_raw.items():
                             original_text = content.get(k)
                             if original_text:
@@ -598,52 +729,41 @@ class ModTranslator:
                             if original_text:
                                 new_translations[original_text] = v
 
-                    # キャッシュ更新と保存
                     self.cache.update(new_translations)
                     save_json(self.cache_file, self.cache)
 
-                    # 最終的な辞書作成
                     translated_data = content.copy()
                     for k, v in content.items():
                         if isinstance(v, str) and v in self.cache:
                             translated_data[k] = self.cache[v]
 
-                # 出力ファイルの書き出し
                 self.write_output(filename, lang_path, translated_data, pack_format)
 
     def write_output(self, original_filename, lang_internal_path, data, pack_format):
-        """リソースパックとしてファイルを書き出す"""
-        # Mod名（拡張子除く）をフォルダ名とする
         mod_name = os.path.splitext(original_filename)[0]
 
         if self.is_shader_mode:
-            # シェーダーの場合: ファイル名を ja_JP.lang 等に強制変更
             dirname = os.path.dirname(lang_internal_path)
             filename = os.path.basename(lang_internal_path)
 
-            # 拡張子に応じて強制リネーム
             if filename.lower().endswith(".json"):
                 new_filename = "ja_jp.json"
             elif filename.lower().endswith(".lang"):
                 new_filename = "ja_JP.lang"
             else:
-                # 万が一その他の形式なら、とりあえず ja_JP を付与しておく
                 base, ext = os.path.splitext(filename)
                 new_filename = f"ja_JP{ext}"
 
             out_path = os.path.join(self.output_dir, mod_name, dirname, new_filename)
 
         else:
-            # 通常Modの場合は assets/modid/lang/ja_jp.json
             path_parts = lang_internal_path.replace("\\", "/").split("/")
             if "assets" in path_parts:
                 idx = path_parts.index("assets")
-                # assets/modid/lang/
                 base_parts = path_parts[idx:-1]
                 dest_dir = os.path.join(self.output_dir, *base_parts)
                 out_path = os.path.join(dest_dir, "ja_jp.json")
 
-                # mcmetaの作成
                 mcmeta_path = os.path.join(self.output_dir, "pack.mcmeta")
                 if not os.path.exists(mcmeta_path):
                     meta = {
@@ -654,24 +774,18 @@ class ModTranslator:
                     }
                     save_json(mcmeta_path, meta)
             else:
-                return  # パス構造が不明ならスキップ
+                return
 
-        # 最終チェック: エラー文字列が含まれていたら保存しない
         final_data = {}
         for k, v in data.items():
             if is_valid_translation(k, v):
                 final_data[k] = v
-            else:
-                # エラーが含まれる場合は翻訳されなかったものとして扱う
-                pass
 
-        # 保存処理
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
         if out_path.endswith(".json"):
             save_json(out_path, data)
         else:
-            # .lang 形式で保存
             with open(out_path, "w", encoding="utf-8") as f:
                 for k, v in data.items():
                     f.write(f"{k}={v}\n")
@@ -679,32 +793,15 @@ class ModTranslator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Minecraft Mod 自動翻訳ツール")
+    parser.add_argument("-i", "--input", required=True, help="入力フォルダ")
+    parser.add_argument("-o", "--output", default="Output_Pack", help="出力フォルダ")
     parser.add_argument(
-        "-i",
-        "--input",
-        required=True,
-        help="入力フォルダ（Mod/Shaderが入っている場所）",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default="Output_Pack",
-        help="出力フォルダ（リソースパック保存先）",
-    )
-    parser.add_argument(
-        "--engine",
-        choices=["google", "gemini", "ollama", "lmstudio"],
-        default="google",
-        help="翻訳エンジン",
+        "--engine", choices=["google", "gemini", "ollama", "lmstudio"], default="google"
     )
     parser.add_argument("--key", help="Gemini APIキー")
-    parser.add_argument("--model", help="使用するモデル名 (Gemini/Ollama用)")
-    parser.add_argument(
-        "--lite-only", action="store_true", help="GeminiのLiteモデルのみを使用する"
-    )
-    parser.add_argument(
-        "--force", action="store_true", help="キャッシュを無視して強制的に再翻訳"
-    )
+    parser.add_argument("--model", help="使用モデル名")
+    parser.add_argument("--lite-only", action="store_true", help="Liteモデル限定")
+    parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
     args = parser.parse_args()
 

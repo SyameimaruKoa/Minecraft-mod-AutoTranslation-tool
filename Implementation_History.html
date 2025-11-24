@@ -156,7 +156,23 @@
 
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.11 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.12 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Smart Recovery & Auto-Ban System</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>優先度復帰 (Priority Recovery):</strong>
+                        フォールバック（低優先度モデルへの切り替え）中でも、30分経過すると自動的に優先度の高いモデル（Flash-Liteなど）に戻って再試行する機能を追加。これにより、メインモデルのレート制限が解除された際に即座に復帰できるようになった。
+                    </li>
+                    <li><span class="tag tag-new">New</span> <strong>自動無効化 (Smart Ban):</strong>
+                        10回連続でエラーが発生したモデルに「使用不可フラグ」を立て、一時的にリストから除外するロジックを実装。応答しないモデルに時間を浪費するのを防ぐ。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>全滅救済 (Robust Failover):</strong>
+                        全てのモデルが使用不可になった場合、自動的にフラグをリセットして最初からリトライする安全装置を追加。翻訳プロセスが完全に停止するのを防止。</li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.11</span>
                     <span class="release-desc">.env Support & Usability Boost</span>
                 </div>
                 <ul>
