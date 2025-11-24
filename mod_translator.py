@@ -157,15 +157,22 @@ def get_prioritized_models(api_key, lite_only=False):
 
     # 優先リスト順にチェック
     for candidate in DEFAULT_PRIORITY:
-        if lite_only and "lite" not in candidate.lower():
-            continue
+        # --- 変更箇所 開始 ---
+        # Liteモード時は、名前に "lite" または "gemma" が含まれていないモデルを除外する
+        if lite_only:
+            is_lite = "lite" in candidate.lower()
+            is_gemma = "gemma" in candidate.lower()
+            if not (is_lite or is_gemma):
+                continue
+        # --- 変更箇所 終了 ---
+
         if candidate in available_models:
             valid_models.append(candidate)
 
     if not valid_models:
         if lite_only:
             print(
-                "警告: Liteモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。"
+                "警告: LiteまたはGemmaモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。"
             )
             return ["gemini-2.5-flash-lite"]
         else:

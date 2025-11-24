@@ -156,7 +156,23 @@
 
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.13 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.14 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Gemma Integration & Lite Logic Update</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-update">Update</span> <strong>Lite限定モードの定義拡張:</strong>
+                        「Liteモード」において、従来のGemini Liteモデルに加え、<strong>Gemma 3系モデル</strong>も使用可能になるようフィルタリングロジックを変更。
+                        Gemma 3は無料枠での制限が緩く（RPD 14,400）、Liteモデルのスタミナが切れた後の強力なバックアップとして機能する。
+                    </li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>モデル選択ロジックの最適化:</strong>
+                        <code>--lite-only</code> フラグが指定された際、名前に "lite" または "gemma" が含まれるモデルを通過させるように条件式を修正。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.13</span>
                     <span class="release-desc">TPM Maximization & JSON Repair</span>
                 </div>
                 <ul>
