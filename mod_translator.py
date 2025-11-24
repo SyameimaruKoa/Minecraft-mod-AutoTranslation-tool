@@ -41,16 +41,12 @@ ERROR_KEYWORDS = [
 
 # 優先モデルリスト（ユーザー指定）
 # デフォルトの優先順位（RPD > TPM > RPM の順）
-# 更新されたレート制限に基づき、RPD（スタミナ）とRPM（速度）のバランスで再構成
 DEFAULT_PRIORITY = [
     # 1. Gemini 2.5 Flash-Lite (RPD 1,000 / RPM 15)
-    # バランス最高。まずはこれから消費する。
     "gemini-2.5-flash-lite",
     # 2. Gemini 2.0 Flash-Lite (RPD 200 / RPM 30)
-    # 速度は最速だが、回数制限がきつい。2.5 Liteが尽きたら、バッチサイズ特大で回す。
     "gemini-2.0-flash-lite",
     # 3. Gemma 3系 (RPD 14,400 / TPM 15,000)
-    # Lite系が尽きた後の長期戦用
     "gemma-3n-e2b-it",
     "gemma-3n-e4b-it",
     "gemma-3-27b-it",
@@ -59,7 +55,6 @@ DEFAULT_PRIORITY = [
     "gemma-3-4b-it",
     "gemma-3-1b-it",
     # 4. Gemini 2.5 Flash (RPD 250 / RPM 10)
-    # 標準モデル。速度はそこそこ。
     "gemini-2.5-flash",
     # 5. その他・旧世代
     "gemini-2.0-flash",
@@ -73,7 +68,6 @@ DEFAULT_PRIORITY = [
 def get_model_settings(model_name):
     """
     モデル名に基づいて、最適なバッチサイズ（行数）とリクエスト間隔（秒）を返す。
-    2025/11/24 時点の最新レート制限表に基づき調整。
     """
     if not model_name:
         return 45, 2.0  # デフォルト
@@ -85,32 +79,26 @@ def get_model_settings(model_name):
     interval = 5.0
 
     if "gemma" in name:
-        # Gemma 3 (RPM 30 / TPM 15,000 / RPD 14,400)
-        # TPM 15kがボトルネック。1リクエストあたりのトークンを抑えないとエラーになる。
-        # 行数を極端に減らし、回転数(RPM 30=2秒間隔)で稼ぐ。
-        batch_size = 5  # 安全圏
-        interval = 2.1  # RPM 30 ギリギリより少し余裕を持つ
+        # Gemma 3: TPM制限がきついため、小分けにする
+        batch_size = 5
+        interval = 2.1
 
     elif "gemini-2.5-flash-lite" in name:
-        # RPD 1k, TPM 250k.
-        # Max tokens per req ~16k. Batch 300 is safe and efficient.
+        # 2.5 Lite: 大量バッチ可能だが、JSON崩壊リスクがあるため300程度に留める
         batch_size = 300
         interval = 5.0
 
     elif "gemini-2.0-flash-lite" in name:
-        # RPD 200, TPM 1M.
-        # Extremely high throughput allowed.
+        # 2.0 Lite: TPM余裕あり
         batch_size = 400
         interval = 4.0
 
     elif "gemini-2.5-flash" in name:
-        # Gemini 2.5 Flash (RPM 10 / TPM 250,000 / RPD 250)
-        # RPM 10 (6秒間隔) と遅め。
+        # 2.5 Flash: RPM制限がきつい
         batch_size = 50
-        interval = 6.2  # RPM 10 (6秒) + マージン
+        interval = 6.2
 
     elif "gemini-2.0-flash" in name:
-        # RPD 200, TPM 1M.
         batch_size = 350
         interval = 5.0
 
@@ -157,14 +145,12 @@ def get_prioritized_models(api_key, lite_only=False):
 
     # 優先リスト順にチェック
     for candidate in DEFAULT_PRIORITY:
-        # --- 変更箇所 開始 ---
         # Liteモード時は、名前に "lite" または "gemma" が含まれていないモデルを除外する
         if lite_only:
             is_lite = "lite" in candidate.lower()
             is_gemma = "gemma" in candidate.lower()
             if not (is_lite or is_gemma):
                 continue
-        # --- 変更箇所 終了 ---
 
         if candidate in available_models:
             valid_models.append(candidate)
@@ -183,6 +169,67 @@ def get_prioritized_models(api_key, lite_only=False):
 
     print(f"情報: {len(valid_models)} 個の有効なモデルが見つかりました。")
     return valid_models
+
+
+def repair_and_parse_json(text):
+    """
+    AIの返答テキストからJSONを抽出し、フォーマット崩れを可能な限り修復して辞書として返す。
+    連続したJSON(Extra data)や、Markdown記法への対応を含む。
+    """
+    # 1. Markdownのコードブロック記法 (```json ... ```) を削除
+    text = re.sub(r"^```json\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^```\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"```$", "", text, flags=re.MULTILINE)
+    text = text.strip()
+
+    combined_result = {}
+    decoder = json.JSONDecoder()
+    pos = 0
+
+    # 2. 連続したJSONオブジェクトを順番にパースして結合する
+    while pos < len(text):
+        # 空白をスキップ
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+
+        try:
+            # raw_decode は (オブジェクト, 次の開始位置) を返す
+            obj, end_idx = decoder.raw_decode(text, idx=pos)
+
+            # 辞書なら統合
+            if isinstance(obj, dict):
+                combined_result.update(obj)
+            # リストなら、キーと値のペアである可能性を考慮して辞書化を試みる (v3.13のロジック)
+            elif isinstance(obj, list):
+                pass  # リストが単体で返ってきた場合のマッピングは呼び出し元で行うが、ここでは無視するかログ出す
+
+            pos = end_idx
+
+        except json.JSONDecodeError:
+            # パースに失敗した場合の救済措置
+            # もしかしたら garbage が挟まっているだけかもしれないので、次の '{' を探す
+            next_brace = text.find("{", pos + 1)
+            if next_brace != -1:
+                pos = next_brace
+            else:
+                # これ以上JSONらしきものがないなら終了
+                break
+
+    if combined_result:
+        return combined_result
+
+    # 3. どうしても辞書としてパースできなかった場合、リストとしてパースできるか試す
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            # リストの場合は呼び出し元で処理するためにそのまま返す（例外的に）
+            return obj
+    except:
+        pass
+
+    raise ValueError("Failed to parse JSON")
 
 
 class ModelSelector:
@@ -213,7 +260,6 @@ class ModelSelector:
             self.current_idx += 1
 
         # 3. もし最後まで到達してしまったら（全滅）
-        # 一時的に全モデルの無効化を解除して、最初から再試行させる（無限ループ防止）
         print(
             "警告: 全てのモデルが使用不可になりました。制限をリセットして再試行します。"
         )
@@ -233,11 +279,10 @@ class ModelSelector:
 
         if best_available_idx != -1 and best_available_idx < self.current_idx:
             print(
-                f"情報: 1分経過。優先度の高いモデル [{self.models[best_available_idx]}] に復帰を試みます。"
+                f"情報: 30分経過。優先度の高いモデル [{self.models[best_available_idx]}] に復帰を試みます。"
             )
             self.current_idx = best_available_idx
             self.fallback_start_time = None
-            # 復帰したモデルの失敗カウントはリセットしておく
             self.failure_counts[self.models[best_available_idx]] = 0
 
     def report_success(self):
@@ -245,7 +290,6 @@ class ModelSelector:
         model = self.models[self.current_idx]
         self.failure_counts[model] = 0
 
-        # もし現在、最高優先度のモデルを使っているなら、フォールバックタイマーをクリア
         if self.current_idx == 0 or all(
             self.models[i] in self.disabled_models for i in range(self.current_idx)
         ):
@@ -255,7 +299,7 @@ class ModelSelector:
         """
         失敗を報告。
         Returns:
-            str: "continue" (そのまま再試行), "switched" (モデル切り替え), "disabled" (無効化して切り替え)
+            str: "continue", "switched", "disabled"
         """
         if self.current_idx >= len(self.models):
             return "continue"
@@ -264,7 +308,6 @@ class ModelSelector:
         self.failure_counts[model] += 1
         count = self.failure_counts[model]
 
-        # 10回連続失敗 -> 使用不可
         if count >= 10:
             print(
                 f"エラー: モデル [{model}] は10回連続で失敗したため、使用不可フラグを立てます。"
@@ -273,7 +316,6 @@ class ModelSelector:
             self._switch_to_next()
             return "disabled"
 
-        # 3回連続失敗 -> 一時的に次へ
         if count >= 3:
             print(
                 f"警告: モデル [{model}] で連続エラー({count}回)。次のモデルへ切り替えます。"
@@ -286,7 +328,6 @@ class ModelSelector:
     def _switch_to_next(self):
         """次のモデルへインデックスを進める"""
         self.current_idx += 1
-        # 初めてフォールバックに入った場合のみ時刻を記録
         if self.fallback_start_time is None:
             self.fallback_start_time = time.time()
 
@@ -295,7 +336,6 @@ class ModelSelector:
 
 
 def load_json(filepath):
-    """JSONファイルを読み込む。失敗したら空辞書を返す。"""
     if not os.path.exists(filepath):
         return {}
     try:
@@ -307,14 +347,12 @@ def load_json(filepath):
 
 
 def save_json(filepath, data):
-    """JSONファイルを保存する。"""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 def is_valid_translation(original, translated):
-    """翻訳結果が妥当かチェックする（エラーメッセージの混入などを防ぐ）"""
     if not translated:
         return False
     for keyword in ERROR_KEYWORDS:
@@ -324,7 +362,6 @@ def is_valid_translation(original, translated):
 
 
 def clean_cache(cache_data):
-    """キャッシュ内の汚染データ（エラーメッセージ）を削除する"""
     cleaned_count = 0
     keys_to_remove = []
     for key, value in cache_data.items():
@@ -337,13 +374,12 @@ def clean_cache(cache_data):
 
     if cleaned_count > 0:
         print(
-            f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。これらは再翻訳されます。"
+            f"情報: キャッシュから {cleaned_count} 件のエラー済みデータを削除しました。"
         )
     return cache_data
 
 
 def format_time(seconds):
-    """秒数を m分s秒 形式に変換"""
     if seconds < 60:
         return f"{int(seconds)}秒"
     else:
@@ -354,7 +390,6 @@ def format_time(seconds):
 
 
 def detect_pack_format(mod_path):
-    """Mod内のpack.mcmetaからバージョン情報を取得する"""
     try:
         with zipfile.ZipFile(mod_path, "r") as zf:
             if "pack.mcmeta" in zf.namelist():
@@ -369,12 +404,10 @@ def detect_pack_format(mod_path):
 
 
 def extract_lang_files(mod_path, is_shader_mode=False):
-    """Mod/Shaderから言語ファイル(en_us.json / .lang)を抽出する"""
-    extracted = {}  # {filename: content_dict}
+    extracted = {}
     try:
         with zipfile.ZipFile(mod_path, "r") as zf:
             for file in zf.namelist():
-                # JSON言語ファイル (Mod)
                 if (
                     not is_shader_mode
                     and file.endswith("en_us.json")
@@ -387,13 +420,11 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                         except:
                             continue
 
-                # .langファイル (Shader / 古いMod)
                 elif file.endswith(".lang") or (
                     is_shader_mode and file.endswith("en_US.lang")
                 ):
                     with zf.open(file) as f:
                         try:
-                            # key=value 形式をパース
                             content = {}
                             for line in (
                                 f.read().decode("utf-8", errors="ignore").splitlines()
@@ -415,21 +446,18 @@ def extract_lang_files(mod_path, is_shader_mode=False):
 
 
 def translate_google_batch(text_list):
-    """Google翻訳 (Deep Translator) を使用"""
     try:
-        # Google翻訳は文字数制限があるため、適度に分割が必要だが
-        # deep_translatorは内部である程度よしなにやってくれる
         translator = GoogleTranslator(source="auto", target="ja")
         return translator.translate_batch(text_list)
     except Exception as e:
         print(f"Google翻訳エラー: {e}")
-        return text_list  # 失敗時は原文を返す
+        return text_list
 
 
 def translate_with_gemini(text_dict, api_key, selector):
     """
-    Gemini APIを使用した翻訳（ModelSelectorによる動的制御版）
-    リスト返却時の救済ロジック追加版
+    Gemini APIを使用した翻訳
+    v3.16: ドリルダウン・リトライ機能搭載。欠落が発生した場合、その場に留まり欠落分のみを再試行する。
     """
     if not text_dict:
         return {}
@@ -440,32 +468,39 @@ def translate_with_gemini(text_dict, api_key, selector):
     current_idx = 0
 
     start_time = time.time()
-
     print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
     while current_idx < total:
         current_model = selector.get_current_model()
         batch_size, interval = get_model_settings(current_model)
 
-        batch_keys = keys[current_idx : current_idx + batch_size]
-        batch_dict = {k: text_dict[k] for k in batch_keys}
+        # 本来このループで処理すべきキーのリスト
+        original_batch_keys = keys[current_idx : current_idx + batch_size]
 
-        # プロンプト強化: 必ずJSONオブジェクト(Dict)で返すよう念押しする
-        prompt = (
+        # 実際にリクエストを送るターゲット（リトライ時に減っていく）
+        current_batch_target = list(original_batch_keys)
+
+        prompt_base = (
             "あなたはMinecraftのMod翻訳の専門家です。以下のJSONオブジェクトの値を日本語に翻訳してください。\n"
             "Minecraft特有の用語（Redstone, Mobなど）は文脈に合わせて適切に訳してください。\n"
             "**重要: 必ず元のキー(Key)を維持したJSONオブジェクト形式で出力してください。配列(List)で返さないでください。**\n"
             "フォーマットはJSONのみ。Markdownのコードブロックは不要です。\n"
             "色コード（§rなど）やフォーマット指定子（%sなど）は維持してください。\n\n"
-            f"{json.dumps(batch_dict, ensure_ascii=False)}"
         )
 
         batch_success = False
         retry_count = 0
-        max_retries = 2
+        max_retries = 3  # 通常のリトライ回数
 
+        # バッチ内ループ（全員救出するまで、あるいは諦めるまで回る）
         while not batch_success:
+
+            # ターゲット用のDictを作成
+            batch_dict = {k: text_dict[k] for k in current_batch_target}
+
             try:
+                prompt = prompt_base + json.dumps(batch_dict, ensure_ascii=False)
+
                 url = GEMINI_API_URL.format(current_model) + f"?key={api_key}"
                 headers = {"Content-Type": "application/json"}
                 payload = {
@@ -473,9 +508,7 @@ def translate_with_gemini(text_dict, api_key, selector):
                     "generationConfig": {"responseMimeType": "application/json"},
                 }
 
-                response = requests.post(
-                    url, headers=headers, json=payload, timeout=90
-                )  # タイムアウト延長
+                response = requests.post(url, headers=headers, json=payload, timeout=90)
 
                 if response.status_code == 200:
                     try:
@@ -483,38 +516,67 @@ def translate_with_gemini(text_dict, api_key, selector):
                         content_text = result_json["candidates"][0]["content"]["parts"][
                             0
                         ]["text"]
-                        translated_batch = json.loads(content_text)
 
-                        # --- ここが修正ポイント ---
-                        # もしAIがリスト(配列)で返してきた場合の救済措置
+                        # パース & 修復
+                        translated_batch = repair_and_parse_json(content_text)
+
+                        # リスト救済ロジック
                         if isinstance(translated_batch, list):
-                            # 数が合っていれば、順番通りにキーとマッピングして辞書に直す
-                            if len(translated_batch) == len(batch_keys):
+                            if len(translated_batch) == len(current_batch_target):
                                 temp_dict = {}
-                                for i, k in enumerate(batch_keys):
-                                    # リストの中身が文字列ならそのまま、オブジェクトならvaluesから取るなどの分岐も可だが
-                                    # 2.0 Flash Liteは文字列のリストを返す傾向がある
+                                for i, k in enumerate(current_batch_target):
                                     val = translated_batch[i]
-                                    if isinstance(
-                                        val, dict
-                                    ):  # 万が一 {"translated": "..."} みたいなのが入っていた場合
+                                    if isinstance(val, dict):
                                         val = list(val.values())[0]
                                     temp_dict[k] = str(val)
                                 translated_batch = temp_dict
                             else:
-                                # 数が合わない場合は信頼できないのでエラー扱い
-                                raise ValueError(
-                                    f"List length mismatch: got {len(translated_batch)}, expected {len(batch_keys)}"
+                                raise ValueError("List length mismatch")
+
+                        if isinstance(translated_batch, dict):
+                            # 結果を統合
+                            valid_count_in_response = 0
+                            for k, v in translated_batch.items():
+                                if k in text_dict:  # 元データにあるものだけ採用
+                                    translated_results[k] = str(v)
+                                    valid_count_in_response += 1
+
+                            # まだ翻訳できていないキーを計算（ドリルダウン）
+                            remaining_keys = [
+                                k
+                                for k in current_batch_target
+                                if k not in translated_results
+                            ]
+
+                            if not remaining_keys:
+                                # コンプリート！
+                                selector.report_success()
+                                batch_success = True
+                            else:
+                                # 一部欠落あり。進捗はあったか？
+                                progress = len(current_batch_target) - len(
+                                    remaining_keys
                                 )
 
-                        # ここで update
-                        if isinstance(translated_batch, dict):
-                            translated_results.update(translated_batch)
-                            selector.report_success()
-                            batch_success = True
-                            current_idx += len(batch_keys)
+                                if progress > 0:
+                                    print(
+                                        f"情報: {progress}件 成功。残り {len(remaining_keys)}件 を再試行するのじゃ..."
+                                    )
+                                    # 進捗があったならリトライカウントをリセットして、執念深く食らいつく
+                                    retry_count = 0
+                                    current_batch_target = remaining_keys
+                                    time.sleep(2)
+                                    continue  # ループ継続
+                                else:
+                                    # 進捗なし（解析失敗や空応答など）
+                                    print(
+                                        f"警告: 進捗なし。残り {len(remaining_keys)}件..."
+                                    )
+                                    retry_count += 1
+                                    time.sleep(2)
+
                         else:
-                            raise ValueError("Response is not a dict or valid list")
+                            raise ValueError("Response is not a dict")
 
                     except (KeyError, json.JSONDecodeError, ValueError) as e:
                         print(f"警告: Gemini応答の解析失敗: {e}")
@@ -526,7 +588,8 @@ def translate_with_gemini(text_dict, api_key, selector):
                     action = selector.report_failure()
                     if action in ["switched", "disabled"]:
                         time.sleep(2)
-                        break
+                        # モデルが変わったので、今のターゲット(current_batch_target)のまま再試行
+                        continue
                     else:
                         time.sleep(interval * 2)
 
@@ -535,24 +598,37 @@ def translate_with_gemini(text_dict, api_key, selector):
                     action = selector.report_failure()
                     if action in ["switched", "disabled"]:
                         time.sleep(2)
-                        break
+                        continue
                     time.sleep(2)
+                    retry_count += 1
 
             except Exception as e:
                 print(f"通信エラー: {e}")
                 retry_count += 1
                 time.sleep(2)
 
+            # リトライ上限を超えた場合
             if (
                 not batch_success
                 and retry_count >= max_retries
                 and response.status_code != 429
             ):
-                print(f"エラー: このバッチの翻訳をスキップします。")
-                current_idx += len(batch_keys)
+                remaining = len(
+                    [k for k in current_batch_target if k not in translated_results]
+                )
+                if remaining > 0:
+                    print(
+                        f"エラー: {remaining}件 はどうしても翻訳できんかった。悔しいがスキップして進むぞ。"
+                    )
+                # 強制的に次へ
+                batch_success = True
                 break
 
-        processed = current_idx
+        # 進捗計算
+        processed = current_idx + len(original_batch_keys)
+        if processed > total:
+            processed = total  # 表示用補正
+
         percent = (processed / total) * 100
         elapsed_time = time.time() - start_time
 
@@ -571,13 +647,13 @@ def translate_with_gemini(text_dict, api_key, selector):
         )
 
         if batch_success:
+            current_idx += len(original_batch_keys)
             time.sleep(interval)
 
     return translated_results
 
 
 def translate_local_llm(text_dict, engine, model_name):
-    """ローカルLLM (Ollama/LM Studio) を使用した翻訳"""
     BATCH_SIZE = 20
     url = OLLAMA_API_URL if engine == "ollama" else LMSTUDIO_API_URL
 
@@ -616,8 +692,10 @@ def translate_local_llm(text_dict, engine, model_name):
                     )
 
                 try:
-                    batch_res = json.loads(content)
-                    translated_results.update(batch_res)
+                    # ローカルLLMにも同様の修復ロジックを適用
+                    batch_res = repair_and_parse_json(content)
+                    if isinstance(batch_res, dict):
+                        translated_results.update(batch_res)
                 except:
                     print("警告: ローカルLLMの応答がJSONではありませんでした。")
             else:
@@ -658,22 +736,18 @@ class ModTranslator:
 
         os.makedirs(self.output_dir, exist_ok=True)
         self.cache_file = os.path.join(self.output_dir, "trans_cache.json")
-        self.log_file = os.path.join(self.output_dir, "progress_log.json")
 
         self.cache = load_json(self.cache_file)
         self.cache = clean_cache(self.cache)
 
-        # セレクターの初期化
         self.selector = None
 
         if self.engine == "gemini":
             if self.api_key:
                 if self.model_name:
-                    # ユーザー指定時はそのモデル1つだけのリスト
                     models = [self.model_name]
                     print(f"使用モデル (固定): {self.model_name}")
                 else:
-                    # 自動探索
                     models = get_prioritized_models(self.api_key, self.lite_only)
                     print(f"優先モデルリスト: {models}")
 
@@ -729,7 +803,6 @@ class ModTranslator:
                             new_translations[to_translate[k]] = tv
 
                     elif self.engine == "gemini":
-                        # セレクターを渡して実行
                         new_translations_raw = translate_with_gemini(
                             to_translate, self.api_key, self.selector
                         )

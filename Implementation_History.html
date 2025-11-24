@@ -156,7 +156,42 @@
 
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.14 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.16 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Drill-down Retry & Perfect Batching</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>ドリルダウン・リトライ機能 (Drill-down Retry):</strong>
+                        バッチ翻訳中に一部の項目が欠落（翻訳漏れ）した場合、スキップせずに「欠落した項目のみ」を集めたミニバッチを生成し、即座に再翻訳を試みる機能を追加。
+                        これにより、大容量バッチ処理時でも翻訳漏れを許さず、可能な限り100%の翻訳完了を目指す挙動に進化した。
+                    </li>
+                    <li><span class="tag tag-update">Update</span> <strong>執念のリトライロジック:</strong>
+                        再試行中に少しでも進捗（1つでも翻訳できた）があれば、リトライ回数カウントをリセットする仕様に変更。
+                        これにより、難解なファイルであっても、時間をかけて少しずつ確実に翻訳を完了させる粘り強さを獲得。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.15</span>
+                    <span class="release-desc">JSON Auto-Stitch & Batch Rescue</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-fix">Fix</span> <strong>JSON連結データの自動修復 (Auto-Stitch):</strong>
+                        Geminiが長文翻訳時に複数のJSONオブジェクトを連続して出力してしまう現象（<code>Extra data</code> エラー）に対し、それらを自動的に検知・結合して一つの辞書として読み込むロジックを実装。これにより、大容量バッチ時のエラー率が劇的に低下。
+                    </li>
+                    <li><span class="tag tag-new">New</span> <strong>バッチ部分救済 (Partial Rescue):</strong>
+                        トークン制限などでJSONが途中で途切れた場合でも、バッチ全体を破棄せず、読み取れた部分までの翻訳結果を確保して保存するように変更。無駄なリトライを減らし、進捗を確実に進める仕様へ強化。
+                    </li>
+                    <li><span class="tag tag-update">Update</span> <strong>Markdown除去の強化:</strong>
+                        AIが出力しがちなMarkdownコードブロック（<code>```json</code> 等）を正規表現でより強力かつ安全に除去する処理を追加。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.14</span>
                     <span class="release-desc">Gemma Integration & Lite Logic Update</span>
                 </div>
                 <ul>
