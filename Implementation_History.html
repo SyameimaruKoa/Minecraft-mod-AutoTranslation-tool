@@ -156,7 +156,25 @@
 
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.12 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.13 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">TPM Maximization & JSON Repair</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>TPM最大活用戦略 (Massive Batching):</strong>
+                        Gemini Liteモデルのバッチサイズを劇的に引き上げ（2.5 Lite: 40→300 / 2.0 Lite:
+                        100→400）、RPD（1日のリクエスト回数）を節約しつつ、余っているTPM（トークン処理能力）を限界まで活用する仕様に変更。これにより処理速度が向上し、429エラーの発生頻度が激減。
+                    </li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>JSON構造自動修復 (List-to-Dict Repair):</strong>
+                        AIが大量のデータを処理する際、キーを省略して「値のリスト」だけで返してくる現象（dictionary update sequence
+                        error）を検知し、自動的に元のキーと結合して正しい辞書形式に復元する救済ロジックを実装。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>プロンプト強化 & タイムアウト延長:</strong>
+                        AIに対してJSONオブジェクト形式の厳守を強く指示するようにプロンプトを改良。また、大容量バッチの生成待ちに合わせてタイムアウト時間を60秒から90秒へ延長。</li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.12</span>
                     <span class="release-desc">Smart Recovery & Auto-Ban System</span>
                 </div>
                 <ul>

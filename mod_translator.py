@@ -92,17 +92,16 @@ def get_model_settings(model_name):
         interval = 2.1  # RPM 30 ギリギリより少し余裕を持つ
 
     elif "gemini-2.5-flash-lite" in name:
-        # Gemini 2.5 Flash-Lite (RPM 15 / TPM 250,000 / RPD 1,000)
-        # RPDが潤沢。RPM 15 (4秒間隔) に合わせて、無理のないバッチサイズで回す。
-        batch_size = 40
-        interval = 4.2  # RPM 15 (4秒) + マージン
+        # RPD 1k, TPM 250k.
+        # Max tokens per req ~16k. Batch 300 is safe and efficient.
+        batch_size = 300
+        interval = 5.0
 
     elif "gemini-2.0-flash-lite" in name:
-        # Gemini 2.0 Flash-Lite (RPM 30 / TPM 1,000,000 / RPD 200)
-        # RPD 200が致命的に少ない。RPMは速いが、回数を節約するために
-        # 1回のリクエストに限界まで詰め込む（TPM 1Mを活かす）。
-        batch_size = 100  # 特大バッチ
-        interval = 2.1  # RPM 30 (2秒) だが、RPD節約のため実質もっとゆっくりでも良い
+        # RPD 200, TPM 1M.
+        # Extremely high throughput allowed.
+        batch_size = 400
+        interval = 4.0
 
     elif "gemini-2.5-flash" in name:
         # Gemini 2.5 Flash (RPM 10 / TPM 250,000 / RPD 250)
@@ -111,17 +110,13 @@ def get_model_settings(model_name):
         interval = 6.2  # RPM 10 (6秒) + マージン
 
     elif "gemini-2.0-flash" in name:
-        # Gemini 2.0 Flash (RPM 15 / TPM 1,000,000 / RPD 200)
-        # Liteと同様、RPD 200がボトルネック。詰め込む。
-        batch_size = 90
-        interval = 4.2  # RPM 15 (4秒)
+        # RPD 200, TPM 1M.
+        batch_size = 350
+        interval = 5.0
 
     elif "pro" in name:
-        # Gemini 2.5 Pro (RPM 2 / TPM 125,000 / RPD 50)
-        # RPM 2 (30秒間隔) という激遅仕様。
-        # 待機時間が長すぎるため、一度に処理する量を増やさないと終わらない。
         batch_size = 60
-        interval = 32.0  # RPM 2 (30秒) + マージン
+        interval = 32.0
 
     return batch_size, interval
 
@@ -427,6 +422,7 @@ def translate_google_batch(text_list):
 def translate_with_gemini(text_dict, api_key, selector):
     """
     Gemini APIを使用した翻訳（ModelSelectorによる動的制御版）
+    リスト返却時の救済ロジック追加版
     """
     if not text_dict:
         return {}
@@ -438,32 +434,28 @@ def translate_with_gemini(text_dict, api_key, selector):
 
     start_time = time.time()
 
-    # 最初のモデルを表示
     print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
     while current_idx < total:
-        # 1. モデル決定（1分経過復帰チェック等はここで行われる）
         current_model = selector.get_current_model()
-
-        # 2. モデルに応じた設定取得
         batch_size, interval = get_model_settings(current_model)
 
-        # 3. バッチ切り出し
         batch_keys = keys[current_idx : current_idx + batch_size]
         batch_dict = {k: text_dict[k] for k in batch_keys}
 
+        # プロンプト強化: 必ずJSONオブジェクト(Dict)で返すよう念押しする
         prompt = (
             "あなたはMinecraftのMod翻訳の専門家です。以下のJSONオブジェクトの値を日本語に翻訳してください。\n"
             "Minecraft特有の用語（Redstone, Mobなど）は文脈に合わせて適切に訳してください。\n"
-            "フォーマットはJSONのまま出力してください。キーは変更しないでください。\n"
+            "**重要: 必ず元のキー(Key)を維持したJSONオブジェクト形式で出力してください。配列(List)で返さないでください。**\n"
+            "フォーマットはJSONのみ。Markdownのコードブロックは不要です。\n"
             "色コード（§rなど）やフォーマット指定子（%sなど）は維持してください。\n\n"
             f"{json.dumps(batch_dict, ensure_ascii=False)}"
         )
 
-        # バッチ内リトライループ
         batch_success = False
         retry_count = 0
-        max_retries = 2  # ネットワークエラー等の単純リトライ数
+        max_retries = 2
 
         while not batch_success:
             try:
@@ -474,7 +466,9 @@ def translate_with_gemini(text_dict, api_key, selector):
                     "generationConfig": {"responseMimeType": "application/json"},
                 }
 
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response = requests.post(
+                    url, headers=headers, json=payload, timeout=90
+                )  # タイムアウト延長
 
                 if response.status_code == 200:
                     try:
@@ -483,14 +477,39 @@ def translate_with_gemini(text_dict, api_key, selector):
                             0
                         ]["text"]
                         translated_batch = json.loads(content_text)
-                        translated_results.update(translated_batch)
 
-                        # 成功報告
-                        selector.report_success()
-                        batch_success = True
-                        current_idx += len(batch_keys)
+                        # --- ここが修正ポイント ---
+                        # もしAIがリスト(配列)で返してきた場合の救済措置
+                        if isinstance(translated_batch, list):
+                            # 数が合っていれば、順番通りにキーとマッピングして辞書に直す
+                            if len(translated_batch) == len(batch_keys):
+                                temp_dict = {}
+                                for i, k in enumerate(batch_keys):
+                                    # リストの中身が文字列ならそのまま、オブジェクトならvaluesから取るなどの分岐も可だが
+                                    # 2.0 Flash Liteは文字列のリストを返す傾向がある
+                                    val = translated_batch[i]
+                                    if isinstance(
+                                        val, dict
+                                    ):  # 万が一 {"translated": "..."} みたいなのが入っていた場合
+                                        val = list(val.values())[0]
+                                    temp_dict[k] = str(val)
+                                translated_batch = temp_dict
+                            else:
+                                # 数が合わない場合は信頼できないのでエラー扱い
+                                raise ValueError(
+                                    f"List length mismatch: got {len(translated_batch)}, expected {len(batch_keys)}"
+                                )
 
-                    except (KeyError, json.JSONDecodeError) as e:
+                        # ここで update
+                        if isinstance(translated_batch, dict):
+                            translated_results.update(translated_batch)
+                            selector.report_success()
+                            batch_success = True
+                            current_idx += len(batch_keys)
+                        else:
+                            raise ValueError("Response is not a dict or valid list")
+
+                    except (KeyError, json.JSONDecodeError, ValueError) as e:
                         print(f"警告: Gemini応答の解析失敗: {e}")
                         retry_count += 1
                         time.sleep(2)
@@ -498,19 +517,14 @@ def translate_with_gemini(text_dict, api_key, selector):
                 elif response.status_code == 429:
                     print(f"警告: レート制限 (429) 発生。")
                     action = selector.report_failure()
-
                     if action in ["switched", "disabled"]:
-                        # モデルが変わったので、今のバッチ処理を中断して
-                        # 外側のループに戻り、新しいモデルで再計算・再試行する
                         time.sleep(2)
                         break
                     else:
-                        # まだ閾値未満なら待機してリトライ
                         time.sleep(interval * 2)
 
                 else:
                     print(f"APIエラー: {response.status_code} - {response.text}")
-                    # 429以外のエラーもカウント対象とするか？今回は安全のためカウントしておく
                     action = selector.report_failure()
                     if action in ["switched", "disabled"]:
                         time.sleep(2)
@@ -522,7 +536,6 @@ def translate_with_gemini(text_dict, api_key, selector):
                 retry_count += 1
                 time.sleep(2)
 
-            # 決定的な失敗でない場合のリトライ上限チェック
             if (
                 not batch_success
                 and retry_count >= max_retries
@@ -532,7 +545,6 @@ def translate_with_gemini(text_dict, api_key, selector):
                 current_idx += len(batch_keys)
                 break
 
-        # 進捗表示
         processed = current_idx
         percent = (processed / total) * 100
         elapsed_time = time.time() - start_time
