@@ -2,7 +2,28 @@
 
 Minecraft Mod Auto Translator (AI Powered)
 
-**v3.8** (Latest)**PowerShell Migration & Adaptive Optimization**
+**v3.11** (Latest)**.env Support & Usability Boost**
+
+- **New** **API キーの永続化 (.env 対応):** 起動時に `.env` ファイルを読み込み、API キーを自動設定する機能を追加。初回入力時に自動保存も提案され、毎回のコピペ作業から解放された。
+- **New** **ヘルプ機能の実装:** コマンドライン引数 `-h` または `--help` で、ツールの詳細な使い方（PowerShell の標準ヘルプ）を表示する機能を実装。
+- **Update** **コード構造の最適化:** `#region` ディレクティブを使用してコードブロックを整理し、メンテナンス性と可読性を向上。
+
+**v3.10**Rate Limit Optimization & Strategy Update
+
+- **Update** **レート制限への適応:** 2025 年 11 月発表の最新レート制限表に基づき、各モデルの制御ロジックを刷新。
+- **New** **戦略的バッチサイズ制御:** RPD（1 日のリクエスト数）と TPM（1 分のトークン数）の制約に合わせて動作モードを個別最適化。
+  - **Gemini 2.5 Flash-Lite:** RPD 1,000 を活かし、主力として安定稼働（Batch 40）。
+  - **Gemini 2.0 Flash-Lite:** 少ない RPD(200)を補うため、超特大バッチ（Batch 100）でリクエスト回数を極限まで節約。
+  - **Gemma 3:** 厳しい TPM(15k)制限を回避するため、極小バッチ（Batch 5）で確実に通す「刻み撃ち」設定へ変更。
+- **Update** **優先順位の再構成:** スタミナ（RPD）と速度（RPM）のバランスを考慮し、デフォルト順序を `2.5 Lite` > `2.0 Lite` > `2.5 Flash` > `Gemma 3` に最適化。
+
+**v3.9**Pip Install Fix & Robust Error Handling
+
+- **Fix** **ライブラリ定義の修正:** `start.ps1` におけるライブラリ指定を文字列から配列（`@(...)`）に変更。PowerShell が複数のライブラリを単一の引数として誤解釈し、インストールに失敗していた問題を解決。
+- **Update** **エラーハンドリング強化:** `pip` コマンドの存在確認と、インストール失敗時の詳細なエラーチェックを追加。エラー発生時に処理を続行せず、適切に停止してユーザーに通知するように改善。
+- **Fix** **パス処理の堅牢化:** 空白を含むフォルダパスが渡された際の引用符（`"`）処理を見直し、PowerShell 上でのパス解釈ミスを防ぐよう微調整。
+
+**v3.8**PowerShell Migration & Adaptive Optimization
 
 - **New** **PowerShell 完全移行:** 従来のバッチファイルを廃止し、`start.ps1` と起動用ランチャー `Run_Translator.bat` に刷新。文字化けを解消し、日本語 UI を完全サポート。
 - **New** **モデル別最適化:** Gemini 2.5 Lite（RPD 重視・小バッチ高速回転）と 2.0 Lite（TPM 重視・大バッチ節約）の特性に合わせ、バッチサイズと待機時間を動的に制御するロジックを実装。

@@ -154,10 +154,67 @@
 
         <div class="timeline">
 
-            <!-- Version 3.8 -->
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.8 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.11 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">.env Support & Usability Boost</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-new">New</span> <strong>APIキーの永続化 (.env対応):</strong>
+                        起動時に <code>.env</code> ファイルを読み込み、APIキーを自動設定する機能を追加。初回入力時に自動保存も提案され、毎回のコピペ作業から解放された。</li>
+                    <li><span class="tag tag-new">New</span> <strong>ヘルプ機能の実装:</strong>
+                        コマンドライン引数 <code>-h</code> または <code>--help</code> で、ツールの詳細な使い方（PowerShellの標準ヘルプ）を表示する機能を実装。</li>
+                    <li><span class="tag tag-update">Update</span> <strong>コード構造の最適化:</strong>
+                        <code>#region</code> ディレクティブを使用してコードブロックを整理し、メンテナンス性と可読性を向上。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.10</span>
+                    <span class="release-desc">Rate Limit Optimization & Strategy Update</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-update">Update</span> <strong>レート制限への適応:</strong>
+                        2025年11月発表の最新レート制限表に基づき、各モデルの制御ロジックを刷新。</li>
+                    <li><span class="tag tag-new">New</span> <strong>戦略的バッチサイズ制御:</strong>
+                        RPD（1日のリクエスト数）とTPM（1分のトークン数）の制約に合わせて動作モードを個別最適化。
+                        <ul style="margin-top:5px; margin-bottom:5px; font-size:0.95em; color:#ccc;">
+                            <li style="margin-bottom:4px;"><strong>Gemini 2.5 Flash-Lite:</strong> RPD
+                                1,000を活かし、主力として安定稼働（Batch 40）。</li>
+                            <li style="margin-bottom:4px;"><strong>Gemini 2.0 Flash-Lite:</strong>
+                                少ないRPD(200)を補うため、超特大バッチ（Batch 100）でリクエスト回数を極限まで節約。</li>
+                            <li style="margin-bottom:4px;"><strong>Gemma 3:</strong> 厳しいTPM(15k)制限を回避するため、極小バッチ（Batch
+                                5）で確実に通す「刻み撃ち」設定へ変更。</li>
+                        </ul>
+                    </li>
+                    <li><span class="tag tag-update">Update</span> <strong>優先順位の再構成:</strong>
+                        スタミナ（RPD）と速度（RPM）のバランスを考慮し、デフォルト順序を <code>2.5 Lite</code> > <code>2.0 Lite</code> >
+                        <code>2.5 Flash</code> > <code>Gemma 3</code> に最適化。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.9</span>
+                    <span class="release-desc">Pip Install Fix & Robust Error Handling</span>
+                </div>
+                <ul>
+                    <li><span class="tag tag-fix">Fix</span> <strong>ライブラリ定義の修正:</strong> <code>start.ps1</code>
+                        におけるライブラリ指定を文字列から配列（<code>@(...)</code>）に変更。PowerShellが複数のライブラリを単一の引数として誤解釈し、インストールに失敗していた問題を解決。
+                    </li>
+                    <li><span class="tag tag-update">Update</span> <strong>エラーハンドリング強化:</strong> <code>pip</code>
+                        コマンドの存在確認と、インストール失敗時の詳細なエラーチェックを追加。エラー発生時に処理を続行せず、適切に停止してユーザーに通知するように改善。</li>
+                    <li><span class="tag tag-fix">Fix</span> <strong>パス処理の堅牢化:</strong>
+                        空白を含むフォルダパスが渡された際の引用符（<code>"</code>）処理を見直し、PowerShell上でのパス解釈ミスを防ぐよう微調整。</li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.8</span>
                     <span class="release-desc">PowerShell Migration & Adaptive Optimization</span>
                 </div>
                 <ul>
@@ -170,11 +227,11 @@
                         翻訳中のプログレスバーに、進捗率（％）と完了予想時間（ETA）を追加。待機時間も含めた正確な見積もりを表示。</li>
                     <li><span class="tag tag-fix">Fix</span> <strong>シェーダー出力修正:</strong> シェーダー翻訳時、出力ファイル名が
                         <code>.lang</code> のまま日本語化されるよう修正（例: <code>ja_JP.lang</code>）。Windows PowerShell 5.1
-                        以前のOS判定バグも修正。</li>
+                        以前のOS判定バグも修正。
+                    </li>
                 </ul>
             </div>
 
-            <!-- Version 3.7 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.7</span>
@@ -183,15 +240,16 @@
                 <ul>
                     <li><span class="tag tag-new">New</span> <strong>最新モデル対応:</strong>
                         <code>gemini-2.5-flash-lite-preview-09-2025</code> および
-                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。</li>
+                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。
+                    </li>
                     <li><span class="tag tag-new">New</span> <strong>Gemma 3 サポート:</strong> Google API経由で利用可能な
-                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。</li>
+                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。
+                    </li>
                     <li><span class="tag tag-update">Update</span> <strong>優先順位の最適化:</strong> 最新のLiteモデルとGemma
                         3を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。</li>
                 </ul>
             </div>
 
-            <!-- Version 3.6 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.6</span>
@@ -207,7 +265,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.5 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.5</span>
@@ -224,7 +281,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.4 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.4</span>
@@ -246,7 +302,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.3 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.3</span>
@@ -259,7 +314,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.2 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.2</span>
@@ -273,7 +327,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.1 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.1</span>
@@ -290,7 +343,6 @@
                 </ul>
             </div>
 
-            <!-- Version 3.0 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v3.0</span>
@@ -307,7 +359,6 @@
                 </ul>
             </div>
 
-            <!-- Version 2.5 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v2.5</span>
@@ -323,7 +374,6 @@
                 </ul>
             </div>
 
-            <!-- Version 2.0 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v2.0</span>
@@ -337,7 +387,6 @@
                 </ul>
             </div>
 
-            <!-- Version 1.0 -->
             <div class="version-card">
                 <div class="version-header">
                     <span class="version-number">v1.0</span>
