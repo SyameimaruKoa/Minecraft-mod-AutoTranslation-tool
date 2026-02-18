@@ -44,8 +44,6 @@ ERROR_KEYWORDS = [
 DEFAULT_PRIORITY = [
     # 1. Gemini 2.5 Flash-Lite (RPD 1,000 / RPM 15)
     "gemini-2.5-flash-lite",
-    # 2. Gemini 2.0 Flash-Lite (RPD 200 / RPM 30)
-    "gemini-2.0-flash-lite",
     # 3. Gemma 3系 (RPD 14,400 / TPM 15,000)
     "gemma-3n-e2b-it",
     "gemma-3n-e4b-it",
@@ -899,3 +897,4 @@ if __name__ == "__main__":
 
     translator = ModTranslator(args)
     translator.run()
+
