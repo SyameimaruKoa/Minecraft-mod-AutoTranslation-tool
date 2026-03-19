@@ -8,7 +8,7 @@ from google import genai
 # 事前準備
 # pip install google-genai python-dotenv
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
     print("エラー: GEMINI_API_KEYが設定されていません。", file=sys.stderr)
