@@ -40,24 +40,20 @@ ERROR_KEYWORDS = [
 ]
 
 # 優先モデルリスト（ユーザー指定）
-# デフォルトの優先順位（RPD > TPM > RPM の順）
 DEFAULT_PRIORITY = [
-    # 1. Gemini 2.5 Flash-Lite (RPD 1,000 / RPM 15)
-    "gemini-2.5-flash-lite",
-    # 3. Gemma 3系 (RPD 14,400 / TPM 15,000)
+    "gemini-2.5-flash", # そろそろ終わる
+    "gemini-2.5-flash-lite", # そろそろ終わる
+
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
     "gemma-3n-e2b-it",
     "gemma-3n-e4b-it",
     "gemma-3-27b-it",
     "gemma-3-12b-it",
-    "gemma-3-8b-it",
+    "gemma-3-8b-it", # 消えた？
     "gemma-3-4b-it",
+    "gemma-3-2b-it", # 増えた？
     "gemma-3-1b-it",
-    # 4. Gemini 2.5 Flash (RPD 250 / RPM 10)
-    "gemini-2.5-flash",
-    # 5. その他・旧世代
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
 ]
 
 # --- ヘルパー関数 ---
@@ -81,24 +77,15 @@ def get_model_settings(model_name):
         batch_size = 5
         interval = 2.1
 
-    elif "gemini-2.5-flash-lite" in name:
-        # 2.5 Lite: 大量バッチ可能だが、JSON崩壊リスクがあるため300程度に留める
+    elif "flash-lite" in name:
+        # Lite: 大量バッチ可能だが、JSON崩壊リスクがあるため300程度に留める
         batch_size = 300
         interval = 5.0
 
-    elif "gemini-2.0-flash-lite" in name:
-        # 2.0 Lite: TPM余裕あり
-        batch_size = 400
-        interval = 4.0
-
-    elif "gemini-2.5-flash" in name:
-        # 2.5 Flash: RPM制限がきつい
+    elif "flash" in name:
+        # Flash: RPM制限がきつい
         batch_size = 50
         interval = 6.2
-
-    elif "gemini-2.0-flash" in name:
-        batch_size = 350
-        interval = 5.0
 
     elif "pro" in name:
         batch_size = 60
@@ -132,12 +119,14 @@ def get_prioritized_models(api_key, lite_only=False):
     print("情報: 利用可能なGeminiモデルを探索中...")
     available_models = get_available_gemini_models(api_key)
 
+    # Geminiが使えない、または見つからない場合のGemmaフォールバックリスト
+    gemma_fallback = [m for m in DEFAULT_PRIORITY if "gemma" in m]
+
     if not available_models:
-        fallback = [DEFAULT_PRIORITY[0]]
         print(
-            f"警告: モデル一覧が取得できなかったため、デフォルトの {fallback[0]} を使用します。"
+            f"警告: モデル一覧が取得できなかったため、Gemmaモデルをフォールバックとして使用します。"
         )
-        return fallback
+        return gemma_fallback
 
     valid_models = []
 
@@ -156,14 +145,14 @@ def get_prioritized_models(api_key, lite_only=False):
     if not valid_models:
         if lite_only:
             print(
-                "警告: LiteまたはGemmaモデルが見つかりませんでした。gemini-2.5-flash-lite を強制使用します。"
+                "警告: LiteまたはGemmaモデルが見つかりませんでした。Gemmaモデルを強制使用します。"
             )
-            return ["gemini-2.5-flash-lite"]
+            return gemma_fallback
         else:
             print(
-                "警告: 優先リスト内のモデルが見つかりませんでした。gemini-2.0-flash を使用します。"
+                "警告: 優先リスト内のモデルが見つかりませんでした。Gemmaモデルを使用します。"
             )
-            return ["gemini-2.0-flash"]
+            return gemma_fallback
 
     print(f"情報: {len(valid_models)} 個の有効なモデルが見つかりました。")
     return valid_models
@@ -897,4 +886,3 @@ if __name__ == "__main__":
 
     translator = ModTranslator(args)
     translator.run()
-
