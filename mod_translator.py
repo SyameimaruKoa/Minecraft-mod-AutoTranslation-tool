@@ -111,7 +111,7 @@ def get_available_gemini_models(api_key):
         return []
 
 
-def get_prioritized_models(api_key, lite_only=False):
+def get_prioritized_models(api_key, gemma_only=False):
     """
     優先順位リストと利用可能なモデルを照らし合わせて、
     利用可能なモデルのリストを優先度順に返す。
@@ -132,20 +132,18 @@ def get_prioritized_models(api_key, lite_only=False):
 
     # 優先リスト順にチェック
     for candidate in DEFAULT_PRIORITY:
-        # Liteモード時は、名前に "lite" または "gemma" が含まれていないモデルを除外する
-        if lite_only:
-            is_lite = "lite" in candidate.lower()
-            is_gemma = "gemma" in candidate.lower()
-            if not (is_lite or is_gemma):
+        # Gemma限定モード時は、名前に "gemma" が含まれていないモデルを除外する
+        if gemma_only:
+            if "gemma" not in candidate.lower():
                 continue
 
         if candidate in available_models:
             valid_models.append(candidate)
 
     if not valid_models:
-        if lite_only:
+        if gemma_only:
             print(
-                "警告: LiteまたはGemmaモデルが見つかりませんでした。Gemmaモデルを強制使用します。"
+                "警告: 指定されたGemmaモデルが見つかりませんでした。デフォルトのGemmaモデルを強制使用します。"
             )
             return gemma_fallback
         else:
@@ -712,7 +710,7 @@ class ModTranslator:
         self.engine = args.engine
         self.api_key = args.key
         self.model_name = args.model
-        self.lite_only = args.lite_only
+        self.gemma_only = args.gemma_only
         self.force = args.force
 
         self.is_shader_mode = "shader" in os.path.basename(self.input_dir).lower()
@@ -735,7 +733,7 @@ class ModTranslator:
                     models = [self.model_name]
                     print(f"使用モデル (固定): {self.model_name}")
                 else:
-                    models = get_prioritized_models(self.api_key, self.lite_only)
+                    models = get_prioritized_models(self.api_key, self.gemma_only)
                     print(f"優先モデルリスト: {models}")
 
                 self.selector = ModelSelector(models)
@@ -879,7 +877,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--key", help="Gemini APIキー")
     parser.add_argument("--model", help="使用モデル名")
-    parser.add_argument("--lite-only", action="store_true", help="Liteモデル限定")
+    parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
     args = parser.parse_args()
