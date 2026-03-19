@@ -2,8 +2,8 @@
 <html lang="ja">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Minecraft Mod Translator - Implementation History</title>
     <style>
         :root {
@@ -153,18 +153,44 @@
         </header>
 
         <div class="timeline">
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.17
+                        <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="release-desc">Gemma-Only Mode Transition</span>
+                </div>
+                <ul>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>Gemma限定モード (Gemma-Only Mode):</strong>
+                        従来の「Lite限定モード」を廃止し、指定リスト内の「Gemma」モデルのみを強制使用するモードへ刷新したのじゃ。
+                        Geminiモデルが使えない環境や、確実なGemmaモデルだけで回したい場合に最適化されておる。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>PS1および設定の追従:</strong> 起動スクリプトの引数を
+                        <code>--lite-only</code> から
+                        <code>--gemma-only</code>
+                        へ変更し、対話メニューの文言もGemma専用の案内へ更新したぞ。
+                    </li>
+                </ul>
+            </div>
 
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.16 <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.16</span>
                     <span class="release-desc">Drill-down Retry & Perfect Batching</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>ドリルダウン・リトライ機能 (Drill-down Retry):</strong>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>ドリルダウン・リトライ機能 (Drill-down Retry):</strong>
                         バッチ翻訳中に一部の項目が欠落（翻訳漏れ）した場合、スキップせずに「欠落した項目のみ」を集めたミニバッチを生成し、即座に再翻訳を試みる機能を追加。
                         これにより、大容量バッチ処理時でも翻訳漏れを許さず、可能な限り100%の翻訳完了を目指す挙動に進化した。
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>執念のリトライロジック:</strong>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>執念のリトライロジック:</strong>
                         再試行中に少しでも進捗（1つでも翻訳できた）があれば、リトライ回数カウントをリセットする仕様に変更。
                         これにより、難解なファイルであっても、時間をかけて少しずつ確実に翻訳を完了させる粘り強さを獲得。
                     </li>
@@ -177,14 +203,22 @@
                     <span class="release-desc">JSON Auto-Stitch & Batch Rescue</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-fix">Fix</span> <strong>JSON連結データの自動修復 (Auto-Stitch):</strong>
-                        Geminiが長文翻訳時に複数のJSONオブジェクトを連続して出力してしまう現象（<code>Extra data</code> エラー）に対し、それらを自動的に検知・結合して一つの辞書として読み込むロジックを実装。これにより、大容量バッチ時のエラー率が劇的に低下。
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>JSON連結データの自動修復 (Auto-Stitch):</strong>
+                        Geminiが長文翻訳時に複数のJSONオブジェクトを連続して出力してしまう現象（<code>Extra data</code>
+                        エラー）に対し、それらを自動的に検知・結合して一つの辞書として読み込むロジックを実装。これにより、大容量バッチ時のエラー率が劇的に低下。
                     </li>
-                    <li><span class="tag tag-new">New</span> <strong>バッチ部分救済 (Partial Rescue):</strong>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>バッチ部分救済 (Partial Rescue):</strong>
                         トークン制限などでJSONが途中で途切れた場合でも、バッチ全体を破棄せず、読み取れた部分までの翻訳結果を確保して保存するように変更。無駄なリトライを減らし、進捗を確実に進める仕様へ強化。
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>Markdown除去の強化:</strong>
-                        AIが出力しがちなMarkdownコードブロック（<code>```json</code> 等）を正規表現でより強力かつ安全に除去する処理を追加。
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>Markdown除去の強化:</strong>
+                        AIが出力しがちなMarkdownコードブロック（<code>```json</code>
+                        等）を正規表現でより強力かつ安全に除去する処理を追加。
                     </li>
                 </ul>
             </div>
@@ -195,12 +229,18 @@
                     <span class="release-desc">Gemma Integration & Lite Logic Update</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-update">Update</span> <strong>Lite限定モードの定義拡張:</strong>
-                        「Liteモード」において、従来のGemini Liteモデルに加え、<strong>Gemma 3系モデル</strong>も使用可能になるようフィルタリングロジックを変更。
-                        Gemma 3は無料枠での制限が緩く（RPD 14,400）、Liteモデルのスタミナが切れた後の強力なバックアップとして機能する。
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>Lite限定モードの定義拡張:</strong>
+                        「Liteモード」において、従来のGemini Liteモデルに加え、<strong>Gemma 3系モデル</strong>も使用可能になるようフィルタリングロジックを変更。 Gemma
+                        3は無料枠での制限が緩く（RPD
+                        14,400）、Liteモデルのスタミナが切れた後の強力なバックアップとして機能する。
                     </li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>モデル選択ロジックの最適化:</strong>
-                        <code>--lite-only</code> フラグが指定された際、名前に "lite" または "gemma" が含まれるモデルを通過させるように条件式を修正。
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>モデル選択ロジックの最適化:</strong>
+                        <code>--lite-only</code> フラグが指定された際、名前に "lite"
+                        または "gemma" が含まれるモデルを通過させるように条件式を修正。
                     </li>
                 </ul>
             </div>
@@ -211,15 +251,25 @@
                     <span class="release-desc">TPM Maximization & JSON Repair</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>TPM最大活用戦略 (Massive Batching):</strong>
-                        Gemini Liteモデルのバッチサイズを劇的に引き上げ（2.5 Lite: 40→300 / 2.0 Lite:
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>TPM最大活用戦略 (Massive Batching):</strong>
+                        Gemini Liteモデルのバッチサイズを劇的に引き上げ（2.5 Lite: 40→300
+                        / 2.0 Lite:
                         100→400）、RPD（1日のリクエスト回数）を節約しつつ、余っているTPM（トークン処理能力）を限界まで活用する仕様に変更。これにより処理速度が向上し、429エラーの発生頻度が激減。
                     </li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>JSON構造自動修復 (List-to-Dict Repair):</strong>
-                        AIが大量のデータを処理する際、キーを省略して「値のリスト」だけで返してくる現象（dictionary update sequence
-                        error）を検知し、自動的に元のキーと結合して正しい辞書形式に復元する救済ロジックを実装。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>プロンプト強化 & タイムアウト延長:</strong>
-                        AIに対してJSONオブジェクト形式の厳守を強く指示するようにプロンプトを改良。また、大容量バッチの生成待ちに合わせてタイムアウト時間を60秒から90秒へ延長。</li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>JSON構造自動修復 (List-to-Dict Repair):</strong>
+                        AIが大量のデータを処理する際、キーを省略して「値のリスト」だけで返してくる現象（dictionary
+                        update sequence
+                        error）を検知し、自動的に元のキーと結合して正しい辞書形式に復元する救済ロジックを実装。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>プロンプト強化 & タイムアウト延長:</strong>
+                        AIに対してJSONオブジェクト形式の厳守を強く指示するようにプロンプトを改良。また、大容量バッチの生成待ちに合わせてタイムアウト時間を60秒から90秒へ延長。
+                    </li>
                 </ul>
             </div>
 
@@ -229,13 +279,21 @@
                     <span class="release-desc">Smart Recovery & Auto-Ban System</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>優先度復帰 (Priority Recovery):</strong>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>優先度復帰 (Priority Recovery):</strong>
                         フォールバック（低優先度モデルへの切り替え）中でも、30分経過すると自動的に優先度の高いモデル（Flash-Liteなど）に戻って再試行する機能を追加。これにより、メインモデルのレート制限が解除された際に即座に復帰できるようになった。
                     </li>
-                    <li><span class="tag tag-new">New</span> <strong>自動無効化 (Smart Ban):</strong>
-                        10回連続でエラーが発生したモデルに「使用不可フラグ」を立て、一時的にリストから除外するロジックを実装。応答しないモデルに時間を浪費するのを防ぐ。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>全滅救済 (Robust Failover):</strong>
-                        全てのモデルが使用不可になった場合、自動的にフラグをリセットして最初からリトライする安全装置を追加。翻訳プロセスが完全に停止するのを防止。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>自動無効化 (Smart Ban):</strong>
+                        10回連続でエラーが発生したモデルに「使用不可フラグ」を立て、一時的にリストから除外するロジックを実装。応答しないモデルに時間を浪費するのを防ぐ。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>全滅救済 (Robust Failover):</strong>
+                        全てのモデルが使用不可になった場合、自動的にフラグをリセットして最初からリトライする安全装置を追加。翻訳プロセスが完全に停止するのを防止。
+                    </li>
                 </ul>
             </div>
 
@@ -245,12 +303,24 @@
                     <span class="release-desc">.env Support & Usability Boost</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>APIキーの永続化 (.env対応):</strong>
-                        起動時に <code>.env</code> ファイルを読み込み、APIキーを自動設定する機能を追加。初回入力時に自動保存も提案され、毎回のコピペ作業から解放された。</li>
-                    <li><span class="tag tag-new">New</span> <strong>ヘルプ機能の実装:</strong>
-                        コマンドライン引数 <code>-h</code> または <code>--help</code> で、ツールの詳細な使い方（PowerShellの標準ヘルプ）を表示する機能を実装。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>コード構造の最適化:</strong>
-                        <code>#region</code> ディレクティブを使用してコードブロックを整理し、メンテナンス性と可読性を向上。
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>APIキーの永続化 (.env対応):</strong> 起動時に
+                        <code>.env</code>
+                        ファイルを読み込み、APIキーを自動設定する機能を追加。初回入力時に自動保存も提案され、毎回のコピペ作業から解放された。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>ヘルプ機能の実装:</strong> コマンドライン引数
+                        <code>-h</code> または
+                        <code>--help</code>
+                        で、ツールの詳細な使い方（PowerShellの標準ヘルプ）を表示する機能を実装。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>コード構造の最適化:</strong>
+                        <code>#region</code>
+                        ディレクティブを使用してコードブロックを整理し、メンテナンス性と可読性を向上。
                     </li>
                 </ul>
             </div>
@@ -261,21 +331,37 @@
                     <span class="release-desc">Rate Limit Optimization & Strategy Update</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-update">Update</span> <strong>レート制限への適応:</strong>
-                        2025年11月発表の最新レート制限表に基づき、各モデルの制御ロジックを刷新。</li>
-                    <li><span class="tag tag-new">New</span> <strong>戦略的バッチサイズ制御:</strong>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>レート制限への適応:</strong>
+                        2025年11月発表の最新レート制限表に基づき、各モデルの制御ロジックを刷新。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>戦略的バッチサイズ制御:</strong>
                         RPD（1日のリクエスト数）とTPM（1分のトークン数）の制約に合わせて動作モードを個別最適化。
                         <ul style="margin-top:5px; margin-bottom:5px; font-size:0.95em; color:#ccc;">
-                            <li style="margin-bottom:4px;"><strong>Gemini 2.5 Flash-Lite:</strong> RPD
-                                1,000を活かし、主力として安定稼働（Batch 40）。</li>
-                            <li style="margin-bottom:4px;"><strong>Gemini 2.0 Flash-Lite:</strong>
-                                少ないRPD(200)を補うため、超特大バッチ（Batch 100）でリクエスト回数を極限まで節約。</li>
-                            <li style="margin-bottom:4px;"><strong>Gemma 3:</strong> 厳しいTPM(15k)制限を回避するため、極小バッチ（Batch
-                                5）で確実に通す「刻み撃ち」設定へ変更。</li>
+                            <li style="margin-bottom:4px;">
+                                <strong>Gemini 2.5 Flash-Lite:</strong> RPD
+                                1,000を活かし、主力として安定稼働（Batch 40）。
+                            </li>
+                            <li style="margin-bottom:4px;">
+                                <strong>Gemini 2.0 Flash-Lite:</strong>
+                                少ないRPD(200)を補うため、超特大バッチ（Batch
+                                100）でリクエスト回数を極限まで節約。
+                            </li>
+                            <li style="margin-bottom:4px;">
+                                <strong>Gemma 3:</strong>
+                                厳しいTPM(15k)制限を回避するため、極小バッチ（Batch
+                                5）で確実に通す「刻み撃ち」設定へ変更。
+                            </li>
                         </ul>
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>優先順位の再構成:</strong>
-                        スタミナ（RPD）と速度（RPM）のバランスを考慮し、デフォルト順序を <code>2.5 Lite</code> > <code>2.0 Lite</code> >
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>優先順位の再構成:</strong>
+                        スタミナ（RPD）と速度（RPM）のバランスを考慮し、デフォルト順序を
+                        <code>2.5 Lite</code> > <code>2.0 Lite</code> >
                         <code>2.5 Flash</code> > <code>Gemma 3</code> に最適化。
                     </li>
                 </ul>
@@ -287,13 +373,22 @@
                     <span class="release-desc">Pip Install Fix & Robust Error Handling</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-fix">Fix</span> <strong>ライブラリ定義の修正:</strong> <code>start.ps1</code>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>ライブラリ定義の修正:</strong> <code>start.ps1</code>
                         におけるライブラリ指定を文字列から配列（<code>@(...)</code>）に変更。PowerShellが複数のライブラリを単一の引数として誤解釈し、インストールに失敗していた問題を解決。
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>エラーハンドリング強化:</strong> <code>pip</code>
-                        コマンドの存在確認と、インストール失敗時の詳細なエラーチェックを追加。エラー発生時に処理を続行せず、適切に停止してユーザーに通知するように改善。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>パス処理の堅牢化:</strong>
-                        空白を含むフォルダパスが渡された際の引用符（<code>"</code>）処理を見直し、PowerShell上でのパス解釈ミスを防ぐよう微調整。</li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>エラーハンドリング強化:</strong>
+                        <code>pip</code>
+                        コマンドの存在確認と、インストール失敗時の詳細なエラーチェックを追加。エラー発生時に処理を続行せず、適切に停止してユーザーに通知するように改善。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>パス処理の堅牢化:</strong>
+                        空白を含むフォルダパスが渡された際の引用符（<code>"</code>）処理を見直し、PowerShell上でのパス解釈ミスを防ぐよう微調整。
+                    </li>
                 </ul>
             </div>
 
@@ -303,15 +398,31 @@
                     <span class="release-desc">PowerShell Migration & Adaptive Optimization</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>PowerShell完全移行:</strong>
-                        従来のバッチファイルを廃止し、<code>start.ps1</code> と起動用ランチャー <code>Run_Translator.bat</code>
-                        に刷新。文字化けを解消し、日本語UIを完全サポート。</li>
-                    <li><span class="tag tag-new">New</span> <strong>モデル別最適化:</strong> Gemini 2.5 Lite（RPD重視・小バッチ高速回転）と
-                        2.0 Lite（TPM重視・大バッチ節約）の特性に合わせ、バッチサイズと待機時間を動的に制御するロジックを実装。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>詳細進捗表示:</strong>
-                        翻訳中のプログレスバーに、進捗率（％）と完了予想時間（ETA）を追加。待機時間も含めた正確な見積もりを表示。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>シェーダー出力修正:</strong> シェーダー翻訳時、出力ファイル名が
-                        <code>.lang</code> のまま日本語化されるよう修正（例: <code>ja_JP.lang</code>）。Windows PowerShell 5.1
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>PowerShell完全移行:</strong>
+                        従来のバッチファイルを廃止し、<code>start.ps1</code>
+                        と起動用ランチャー
+                        <code>Run_Translator.bat</code>
+                        に刷新。文字化けを解消し、日本語UIを完全サポート。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>モデル別最適化:</strong> Gemini 2.5
+                        Lite（RPD重視・小バッチ高速回転）と 2.0
+                        Lite（TPM重視・大バッチ節約）の特性に合わせ、バッチサイズと待機時間を動的に制御するロジックを実装。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>詳細進捗表示:</strong>
+                        翻訳中のプログレスバーに、進捗率（％）と完了予想時間（ETA）を追加。待機時間も含めた正確な見積もりを表示。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>シェーダー出力修正:</strong>
+                        シェーダー翻訳時、出力ファイル名が
+                        <code>.lang</code> のまま日本語化されるよう修正（例:
+                        <code>ja_JP.lang</code>）。Windows PowerShell 5.1
                         以前のOS判定バグも修正。
                     </li>
                 </ul>
@@ -323,15 +434,24 @@
                     <span class="release-desc">Gemini 2.5 Preview & Gemma 3 Integration</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>最新モデル対応:</strong>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>最新モデル対応:</strong>
                         <code>gemini-2.5-flash-lite-preview-09-2025</code> および
-                        <code>gemini-2.0-flash-lite-preview-02-05</code> を優先リストに追加。
+                        <code>gemini-2.0-flash-lite-preview-02-05</code>
+                        を優先リストに追加。
                     </li>
-                    <li><span class="tag tag-new">New</span> <strong>Gemma 3 サポート:</strong> Google API経由で利用可能な
-                        <code>gemma-3</code> シリーズ（1b～27b）および <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>Gemma 3 サポート:</strong> Google API経由で利用可能な
+                        <code>gemma-3</code> シリーズ（1b～27b）および
+                        <code>gemma-3n</code> 系モデルを自動選択ロジックに統合。
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>優先順位の最適化:</strong> 最新のLiteモデルとGemma
-                        3を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。</li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>優先順位の最適化:</strong> 最新のLiteモデルとGemma
+                        3を最優先に使用するようデフォルト順序を更新し、効率をさらに向上。
+                    </li>
                 </ul>
             </div>
 
@@ -341,12 +461,22 @@
                     <span class="release-desc">Shader Support & Path Fixes</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>シェーダーパック翻訳対応:</strong> <code>.lang</code>
-                        ファイル（key=value形式）の読み書きに対応し、シェーダーパックの翻訳が可能になった。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>モード自動切替:</strong>
-                        入力フォルダ名に「shader」が含まれる場合、自動的にシェーダー翻訳モードに切り替わり、出力構造やフォーマットが最適化される。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>出力パス修正:</strong>
-                        シェーダーモード時は、ModのようなIDごとの分類ではなく、zip内のディレクトリ構造を維持して出力するように修正。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>シェーダーパック翻訳対応:</strong>
+                        <code>.lang</code>
+                        ファイル（key=value形式）の読み書きに対応し、シェーダーパックの翻訳が可能になった。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>モード自動切替:</strong>
+                        入力フォルダ名に「shader」が含まれる場合、自動的にシェーダー翻訳モードに切り替わり、出力構造やフォーマットが最適化される。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>出力パス修正:</strong>
+                        シェーダーモード時は、ModのようなIDごとの分類ではなく、zip内のディレクトリ構造を維持して出力するように修正。
+                    </li>
                 </ul>
             </div>
 
@@ -356,13 +486,23 @@
                     <span class="release-desc">Enhanced Cleaning & Re-translation</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>出力ファイル浄化機能:</strong> ツール起動時に、すでに出力された
-                        <code>ja_jp.json</code> を全スキャンし、「Error 504」などのエラー文字列が含まれるエントリを物理的に削除する機能を追加。
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>出力ファイル浄化機能:</strong>
+                        ツール起動時に、すでに出力された
+                        <code>ja_jp.json</code> を全スキャンし、「Error
+                        504」などのエラー文字列が含まれるエントリを物理的に削除する機能を追加。
                     </li>
-                    <li><span class="tag tag-update">Update</span> <strong>再翻訳トリガー:</strong>
-                        出力ファイルから削除された（またはエラーが含まれる）エントリは、次回の実行時に自動的に再翻訳対象となるようロジックを強化。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>最終防衛ライン:</strong>
-                        翻訳結果をファイルに書き込む直前にも再チェックを行い、エラー文字列が含まれる場合は原文（英語）に戻して保存するように変更。</li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>再翻訳トリガー:</strong>
+                        出力ファイルから削除された（またはエラーが含まれる）エントリは、次回の実行時に自動的に再翻訳対象となるようロジックを強化。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>最終防衛ライン:</strong>
+                        翻訳結果をファイルに書き込む直前にも再チェックを行い、エラー文字列が含まれる場合は原文（英語）に戻して保存するように変更。
+                    </li>
                 </ul>
             </div>
 
@@ -372,18 +512,40 @@
                     <span class="release-desc">Lite Strategy & Self-Healing</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>Lite限定モード:</strong> <code>--lite-only</code>
-                        オプションを追加。レート制限対策として、軽量モデルのみに限定して動作させる機能。</li>
-                    <li><span class="tag tag-new">New</span> <strong>自動修復機能 (Self-Healing):</strong>
-                        起動時に出力済みファイル（<code>ja_jp.json</code>）とキャッシュを全スキャンし、「Error 504」などの汚染データを物理的に削除して再翻訳対象にする機能。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>優先順位の刷新:</strong> RPD（1日あたりのリクエスト数）を重視。Gemini
-                        2.5 Lite (RPD 1000) を主力とし、Gemma 3 (RPD 14400) を「最後の砦」として配置する鉄壁の布陣へ変更。</li>
-                    <li><span class="tag tag-new">New</span> <strong>詳細進捗可視化:</strong>
-                        ファイル単位だけでなく、内部のバッチ通信状況（<code>Translating: 1/86</code>）をプログレスバーで可視化し、フリーズの誤解を解消。</li>
-                    <li><span class="tag tag-new">New</span> <strong>モデルチェッカー:</strong>
-                        引数なしで起動した際に、APIキーで利用可能なモデル一覧を表示する機能を追加。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>429エラー対策強化:</strong>
-                        レート制限時は待機せず即座に次のモデルへスイッチし、全モデル枯渇時のみ待機するロジックに変更。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>Lite限定モード:</strong>
+                        <code>--lite-only</code>
+                        オプションを追加。レート制限対策として、軽量モデルのみに限定して動作させる機能。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>自動修復機能 (Self-Healing):</strong>
+                        起動時に出力済みファイル（<code>ja_jp.json</code>）とキャッシュを全スキャンし、「Error
+                        504」などの汚染データを物理的に削除して再翻訳対象にする機能。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>優先順位の刷新:</strong>
+                        RPD（1日あたりのリクエスト数）を重視。Gemini 2.5 Lite (RPD 1000)
+                        を主力とし、Gemma 3 (RPD 14400)
+                        を「最後の砦」として配置する鉄壁の布陣へ変更。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>詳細進捗可視化:</strong>
+                        ファイル単位だけでなく、内部のバッチ通信状況（<code>Translating: 1/86</code>）をプログレスバーで可視化し、フリーズの誤解を解消。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>モデルチェッカー:</strong>
+                        引数なしで起動した際に、APIキーで利用可能なモデル一覧を表示する機能を追加。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>429エラー対策強化:</strong>
+                        レート制限時は待機せず即座に次のモデルへスイッチし、全モデル枯渇時のみ待機するロジックに変更。
+                    </li>
                 </ul>
             </div>
 
@@ -393,9 +555,17 @@
                     <span class="release-desc">Custom Path Support</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>出力先自由指定:</strong> <code>start.bat</code>
-                        で出力先フォルダのフルパス指定やドラッグ＆ドロップ入力に対応。デスクトップや別ドライブへの保存が可能に。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>パス表示改善:</strong> 実行ログに出力先の絶対パスを表示し、保存場所を明確化。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>出力先自由指定:</strong>
+                        <code>start.bat</code>
+                        で出力先フォルダのフルパス指定やドラッグ＆ドロップ入力に対応。デスクトップや別ドライブへの保存が可能に。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>パス表示改善:</strong>
+                        実行ログに出力先の絶対パスを表示し、保存場所を明確化。
+                    </li>
                 </ul>
             </div>
 
@@ -405,10 +575,16 @@
                     <span class="release-desc">Manual Selection & Project Isolation</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-update">Update</span> <strong>プロジェクト別管理:</strong>
-                        キャッシュとログの保存場所を、スクリプト直下から「各出力リソースパックフォルダ内」に変更。複数プロジェクトの並行作業が可能に。</li>
-                    <li><span class="tag tag-new">New</span> <strong>手動モデル選択モード:</strong>
-                        自動選択に頼らず、APIキーで利用可能なモデル一覧からユーザーが直接番号で選べる機能を追加。</li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>プロジェクト別管理:</strong>
+                        キャッシュとログの保存場所を、スクリプト直下から「各出力リソースパックフォルダ内」に変更。複数プロジェクトの並行作業が可能に。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>手動モデル選択モード:</strong>
+                        自動選択に頼らず、APIキーで利用可能なモデル一覧からユーザーが直接番号で選べる機能を追加。
+                    </li>
                 </ul>
             </div>
 
@@ -418,11 +594,19 @@
                     <span class="release-desc">Statistics & Visibility</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>詳細統計表示:</strong>
-                        フォルダ内の全ファイル数、Modファイル数、スキップ済み数を明確に表示し、「Mod数が合わない」問題を解決。</li>
-                    <li><span class="tag tag-update">Update</span> <strong>探索ロジックの適正化:</strong>
-                        再帰探索（サブフォルダ探索）を廃止し、ユーザーの期待値に近い「直下フォルダのみ」の探索に戻した。</li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>Mod認識修正:</strong> <code>.jar</code> に加えて
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>詳細統計表示:</strong>
+                        フォルダ内の全ファイル数、Modファイル数、スキップ済み数を明確に表示し、「Mod数が合わない」問題を解決。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>探索ロジックの適正化:</strong>
+                        再帰探索（サブフォルダ探索）を廃止し、ユーザーの期待値に近い「直下フォルダのみ」の探索に戻した。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>Mod認識修正:</strong> <code>.jar</code> に加えて
                         <code>.zip</code> 形式のファイルも正しく認識するように修正。
                     </li>
                 </ul>
@@ -434,13 +618,23 @@
                     <span class="release-desc">REST API & Stability Overhaul</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-fix">Fix</span> <strong>通信方式の刷新 (REST API化):</strong>
-                        フリーズやクラッシュの原因となっていた公式SDK (gRPC) を廃止し、Python標準の <code>requests</code> を用いたREST
-                        API直接通信へ完全移行。これにより安定性が劇的に向上。</li>
-                    <li><span class="tag tag-new">New</span> <strong>モデル自動探索機能:</strong>
-                        決め打ちのモデル名ではなく、APIキーを使って「現在利用可能なモデル一覧」を取得し、最適なものを自動で選ぶロジックを実装（404エラー根絶）。</li>
-                    <li><span class="tag tag-new">New</span> <strong>デバッグ詳細表示:</strong>
-                        APIエラー時にHTTPステータスコードとメッセージ全文を表示するように変更。</li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>通信方式の刷新 (REST API化):</strong>
+                        フリーズやクラッシュの原因となっていた公式SDK (gRPC)
+                        を廃止し、Python標準の <code>requests</code> を用いたREST
+                        API直接通信へ完全移行。これにより安定性が劇的に向上。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>モデル自動探索機能:</strong>
+                        決め打ちのモデル名ではなく、APIキーを使って「現在利用可能なモデル一覧」を取得し、最適なものを自動で選ぶロジックを実装（404エラー根絶）。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>デバッグ詳細表示:</strong>
+                        APIエラー時にHTTPステータスコードとメッセージ全文を表示するように変更。
+                    </li>
                 </ul>
             </div>
 
@@ -450,12 +644,22 @@
                     <span class="release-desc">Fallback System & Batch Fixes</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>Google翻訳フォールバック:</strong>
-                        AI翻訳がエラー（404/429等）になった際、処理を止めずにGoogle翻訳へ自動で切り替える機能を実装。</li>
-                    <li><span class="tag tag-new">New</span> <strong>リアルタイム可視化:</strong> プログレスバーにフォールバック発生回数をリアルタイムで表示。
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>Google翻訳フォールバック:</strong>
+                        AI翻訳がエラー（404/429等）になった際、処理を止めずにGoogle翻訳へ自動で切り替える機能を実装。
                     </li>
-                    <li><span class="tag tag-fix">Fix</span> <strong>バッチファイル安定化:</strong> 日本語コメントによる文字化け、<code>&</code>
-                        記号による構文エラー、クリップボード誤爆問題を修正（<code>choice</code>コマンド導入、英語UI化）。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>リアルタイム可視化:</strong>
+                        プログレスバーにフォールバック発生回数をリアルタイムで表示。
+                    </li>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>バッチファイル安定化:</strong>
+                        日本語コメントによる文字化け、<code>&</code>
+                        記号による構文エラー、クリップボード誤爆問題を修正（<code>choice</code>コマンド導入、英語UI化）。
+                    </li>
                 </ul>
             </div>
 
@@ -465,10 +669,17 @@
                     <span class="release-desc">AI Integration</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>Gemini AI搭載:</strong>
-                        単語置換ではなく、JSONをまとめてAIに投げ、文脈（Minecraft用語）を考慮した翻訳を実現。</li>
-                    <li><span class="tag tag-new">New</span> <strong>バージョン自動検知:</strong> Mod内の <code>pack.mcmeta</code>
-                        を解析し、最適なパックフォーマットを自動設定。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>Gemini AI搭載:</strong>
+                        単語置換ではなく、JSONをまとめてAIに投げ、文脈（Minecraft用語）を考慮した翻訳を実現。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>バージョン自動検知:</strong> Mod内の
+                        <code>pack.mcmeta</code>
+                        を解析し、最適なパックフォーマットを自動設定。
+                    </li>
                 </ul>
             </div>
 
@@ -478,18 +689,20 @@
                     <span class="release-desc">Initial Release</span>
                 </div>
                 <ul>
-                    <li><span class="tag tag-new">New</span> <strong>基本機能:</strong>
-                        Modからの言語ファイル抽出、Google翻訳、リソースパック生成、キャッシュ機能。</li>
-                    <li><span class="tag tag-new">New</span> <strong>環境構築:</strong> <code>start.bat</code>
-                        によるPython仮想環境(venv)の自動構築。</li>
+                    <li>
+                        <span class="tag tag-new">New</span>
+                        <strong>基本機能:</strong>
+                        Modからの言語ファイル抽出、Google翻訳、リソースパック生成、キャッシュ機能。
+                    </li>
+                    <li>
+                        <span class="tag tag-new">New</span> <strong>環境構築:</strong>
+                        <code>start.bat</code> によるPython仮想環境(venv)の自動構築。
+                    </li>
                 </ul>
             </div>
-
         </div>
 
-        <footer>
-            Created by 賢狼 (Wise Wolf) with Gemini
-        </footer>
+        <footer>Created by 賢狼 (Wise Wolf) with Gemini</footer>
     </div>
 </body>
 

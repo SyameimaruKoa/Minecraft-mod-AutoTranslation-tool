@@ -36,7 +36,7 @@
 
 .NOTES
     Author: Wise Wolf
-    Version: 3.5 (.env Support Added)
+    Version: 3.17 (Gemma-Only Mode Integration)
 #>
 
 param (
@@ -206,12 +206,12 @@ switch ($engine_choice) {
         $args_list += "--key", "$api_key"
 
         Write-Host ""
-        Write-Host "Lite限定モードを使うか？" -ForegroundColor Yellow
-        Write-Host " (レート制限(429)を回避し、軽量モデルのみで回すモードじゃ)"
-        $lite_check = Read-Host " [Y] Yes / [N] No"
-        if ($lite_check -match "^[Yy]") {
-            $args_list += "--lite-only"
-            Write-Log "Lite限定モード: ON" "Cyan"
+        Write-Host "Gemma限定モードを使うか？" -ForegroundColor Yellow
+        Write-Host " (Geminiが使えない時や、確実なGemmaモデルのみで回すモードじゃ)"
+        $gemma_check = Read-Host " [Y] Yes / [N] No"
+        if ($gemma_check -match "^[Yy]") {
+            $args_list += "--gemma-only"
+            Write-Log "Gemma限定モード: ON" "Cyan"
         }
     }
     "3" {
