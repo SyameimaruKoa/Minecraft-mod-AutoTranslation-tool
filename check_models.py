@@ -14,6 +14,7 @@ if not api_key:
     print("エラー: GEMINI_API_KEYが設定されていません。", file=sys.stderr)
     sys.exit(1)
 client = genai.Client(api_key=api_key)
+print("利用可能なモデルの一覧を取得します...\n")
 for model in client.models.list():
-    print(model.model_dump())
-    break
+    if model.supported_actions and 'generateContent' in model.supported_actions:
+        print(model.name)
