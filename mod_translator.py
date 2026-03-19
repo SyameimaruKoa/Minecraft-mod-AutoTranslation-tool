@@ -656,11 +656,12 @@ def translate_local_llm(text_dict, engine, model_name):
 
         try:
             payload = {
-                "model": model_name,
+                "model": model_name if model_name else "local-model",
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "format": "json",
             }
+            if engine == "ollama":
+                payload["format"] = "json"
 
             response = requests.post(url, json=payload, timeout=120)
 
@@ -685,9 +686,11 @@ def translate_local_llm(text_dict, engine, model_name):
                     print("警告: ローカルLLMの応答がJSONではありませんでした。")
             else:
                 print(f"ローカルLLMエラー: {response.status_code}")
+                exit(1)
 
         except Exception as e:
             print(f"ローカルLLM通信エラー: {e}")
+            exit(1)
 
         processed += len(batch_keys)
         elapsed_time = time.time() - start_time
