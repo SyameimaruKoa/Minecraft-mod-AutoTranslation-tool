@@ -2,7 +2,12 @@
 
 Minecraft Mod Auto Translator (AI Powered)
 
-**v3.17** (Latest)**Gemma-Only Mode Transition**
+**v3.18** (Latest)**Local LLM Fixes & Error Handling**
+
+- **Fix** **LM Studio 通信エラーの修正:** LM Studio（OpenAI互換API）使用時にHTTP 400エラーが発生する問題を解決するため、`model`パラメータにダミーのデフォルト値を設定し、`format="json"`パラメータの送信をOllama限定に変更した。
+- **Update** **ローカルLLMのエラーハンドリング強化:** ローカルLLM（LM Studio / Ollama）のAPIからエラー（非200ステータス）や通信障害が返された際、エラーを無視して次のファイルの翻訳に進んでしまう不具合を修正。直ちに処理を停止するよう改善した。
+
+**v3.17**Gemma-Only Mode Transition
 
 - **New** **Gemma限定モード (Gemma-Only Mode):** 従来の「Lite限定モード」を廃止し、指定リスト内の「Gemma」モデルのみを強制使用するモードへ刷新したのじゃ。 Geminiモデルが使えない環境や、確実なGemmaモデルだけで回したい場合に最適化されておる。
 - **Update** **PS1および設定の追従:** 起動スクリプトの引数を `--lite-only` から `--gemma-only` へ変更し、対話メニューの文言もGemma専用の案内へ更新したぞ。
@@ -45,9 +50,9 @@ Minecraft Mod Auto Translator (AI Powered)
 
 - **Update** **レート制限への適応:** 2025年11月発表の最新レート制限表に基づき、各モデルの制御ロジックを刷新。
 - **New** **戦略的バッチサイズ制御:** RPD（1日のリクエスト数）とTPM（1分のトークン数）の制約に合わせて動作モードを個別最適化。
-  * **Gemini 2.5 Flash-Lite:** RPD 1,000を活かし、主力として安定稼働（Batch 40）。
-  * **Gemini 2.0 Flash-Lite:** 少ないRPD(200)を補うため、超特大バッチ（Batch 100）でリクエスト回数を極限まで節約。
-  * **Gemma 3:** 厳しいTPM(15k)制限を回避するため、極小バッチ（Batch 5）で確実に通す「刻み撃ち」設定へ変更。
+  - **Gemini 2.5 Flash-Lite:** RPD 1,000を活かし、主力として安定稼働（Batch 40）。
+  - **Gemini 2.0 Flash-Lite:** 少ないRPD(200)を補うため、超特大バッチ（Batch 100）でリクエスト回数を極限まで節約。
+  - **Gemma 3:** 厳しいTPM(15k)制限を回避するため、極小バッチ（Batch 5）で確実に通す「刻み撃ち」設定へ変更。
 - **Update** **優先順位の再構成:** スタミナ（RPD）と速度（RPM）のバランスを考慮し、デフォルト順序を `2.5 Lite` > `2.0 Lite` > `2.5 Flash` > `Gemma 3` に最適化。
 
 **v3.9**Pip Install Fix & Robust Error Handling

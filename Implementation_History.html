@@ -155,8 +155,29 @@
         <div class="timeline">
             <div class="version-card">
                 <div class="version-header">
-                    <span class="version-number">v3.17
-                        <span style="font-size:0.6em; color:#888;">(Latest)</span></span>
+                    <span class="version-number">v3.18
+                        <span style="font-size: 0.6em; color: #888">(Latest)</span></span>
+                    <span class="release-desc">Local LLM Fixes & Error Handling</span>
+                </div>
+                <ul>
+                    <li>
+                        <span class="tag tag-fix">Fix</span>
+                        <strong>LM Studio 通信エラーの修正:</strong>
+                        LM Studio（OpenAI互換API）使用時にHTTP
+                        400エラーが発生する問題を解決するため、<code>model</code>パラメータにダミーのデフォルト値を設定し、<code>format="json"</code>パラメータの送信をOllama限定に変更した。
+                    </li>
+                    <li>
+                        <span class="tag tag-update">Update</span>
+                        <strong>ローカルLLMのエラーハンドリング強化:</strong>
+                        ローカルLLM（LM Studio /
+                        Ollama）のAPIからエラー（非200ステータス）や通信障害が返された際、エラーを無視して次のファイルの翻訳に進んでしまう不具合を修正。直ちに処理を停止するよう改善した。
+                    </li>
+                </ul>
+            </div>
+
+            <div class="version-card">
+                <div class="version-header">
+                    <span class="version-number">v3.17</span>
                     <span class="release-desc">Gemma-Only Mode Transition</span>
                 </div>
                 <ul>
@@ -605,8 +626,8 @@
                         再帰探索（サブフォルダ探索）を廃止し、ユーザーの期待値に近い「直下フォルダのみ」の探索に戻した。
                     </li>
                     <li>
-                        <span class="tag tag-fix">Fix</span>
-                        <strong>Mod認識修正:</strong> <code>.jar</code> に加えて
+                        <span class="tag tag-fix">Fix</span> <strong>Mod認識修正:</strong>
+                        <code>.jar</code> に加えて
                         <code>.zip</code> 形式のファイルも正しく認識するように修正。
                     </li>
                 </ul>
