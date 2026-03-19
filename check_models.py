@@ -5,6 +5,8 @@ import sys
 
 # コード引用元
 # https://zenn.dev/croco_82/articles/30a4112805c5dd
+# 事前準備
+# pip install google-generativeai
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
