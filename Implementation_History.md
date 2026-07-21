@@ -2,7 +2,13 @@
 
 Minecraft Mod Auto Translator (AI Powered)
 
-**v3.18** (Latest)**Local LLM Fixes & Error Handling**
+**v3.19** (Latest)**Google Colab (LM Link) Integration**
+
+- **New** **Google Colab (LM Link) 連携用ノートブックの追加:** Google Colab 上で LM Studio をヘッドレス起動し、LM Link 経由でローカルPCの LM Studio と連携可能な `run_colab_server.ipynb` を新規追加した。
+- **Update** **README.md の更新とバッジの配置:** リポジトリの `README.md` に直接 Colab で開くための「Open In Colab」バッジを配置し、LM Link 連携の使い方に関する説明手順を追記。
+- **Delete** **不要ファイルの削除:** 旧方式のドキュメントおよび HTML 形式の履歴ファイル (`Implementation_History.html`) を削除。
+
+**v3.18**Local LLM Fixes & Error Handling
 
 - **Fix** **LM Studio 通信エラーの修正:** LM Studio（OpenAI互換API）使用時にHTTP 400エラーが発生する問題を解決するため、`model`パラメータにダミーのデフォルト値を設定し、`format="json"`パラメータの送信をOllama限定に変更した。
 - **Update** **ローカルLLMのエラーハンドリング強化:** ローカルLLM（LM Studio / Ollama）のAPIからエラー（非200ステータス）や通信障害が返された際、エラーを無視して次のファイルの翻訳に進んでしまう不具合を修正。直ちに処理を停止するよう改善した。
