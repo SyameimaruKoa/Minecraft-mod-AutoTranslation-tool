@@ -744,6 +744,21 @@ def resolve_plamo_model(api_url):
             "PLaMo 3 TranslateがLM Studioのモデル一覧にありません。"
             "モデルをロードするか --model でモデルIDを指定してください。"
         )
+    try:
+        native_url = api_url.split("/v1/", 1)[0] + "/api/v0/models"
+        native_response = requests.get(native_url, timeout=10)
+        native_response.raise_for_status()
+        loaded = [
+            item["id"] for item in native_response.json().get("data", [])
+            if isinstance(item, dict)
+            and item.get("id") in candidates
+            and item.get("state") == "loaded"
+        ]
+        if len(loaded) == 1:
+            print(f"情報: LM Studioでロード済みのモデルを選択: {loaded[0]}")
+            return loaded[0]
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        pass
     raise RuntimeError(
         "PLaMo 3 Translateが複数見つかりました: "
         + ", ".join(candidates)
