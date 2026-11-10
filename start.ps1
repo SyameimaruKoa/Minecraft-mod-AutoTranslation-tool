@@ -10,7 +10,7 @@
     主な機能:
     - Python環境のチェック
     - 仮想環境(.venv)の自動作成とライブラリインストール
-    - 翻訳エンジン（Google/Gemini/Local）の選択メニュー
+    - 翻訳エンジン（Google/Gemini/Local/PLaMo 3 Translate）の選択メニュー
     - Gemini APIキーの自動保存・読み込み(.env)
     - Modフォルダと出力先フォルダのドラッグ＆ドロップ入力対応
 
@@ -161,9 +161,10 @@ Write-Host "翻訳エンジンを選択するのじゃ:" -ForegroundColor Green
 Write-Host " [1] Google Translate (無料/キー不要/精度並)"
 Write-Host " [2] Gemini AI (高速/要APIキー/高精度 - 推奨)"
 Write-Host " [3] Local LLM (Ollama/LM Studio)"
+Write-Host " [4] PLaMo 3 Translate (llama.cpp)"
 Write-Host ""
 
-$engine_choice = Read-Host "番号を入力 [1-3]"
+$engine_choice = Read-Host "番号を入力 [1-4]"
 
 $args_list = @()
 $api_key = ""
@@ -228,6 +229,18 @@ switch ($engine_choice) {
             if (-not [string]::IsNullOrWhiteSpace($model_name)) {
                 $args_list += "--model", "$model_name"
             }
+        }
+    }
+    "4" {
+        $args_list += "--engine", "plamo"
+        Write-Log "PLaMo 3 Translate: llama.cppのサーバーを起動しておくのじゃ。" "Cyan"
+        $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:8080/v1/completions)"
+        if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
+            $args_list += "--plamo-api-url", "$plamo_url"
+        }
+        $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
+        if ($plamo_form -eq "2") {
+            $args_list += "--plamo-form", "polite"
         }
     }
     Default {
