@@ -246,6 +246,94 @@ switch ($engine_choice) {
         if ($plamo_form -eq "2") {
             $args_list += "--plamo-form", "polite"
         }
+        $plamo_glossary = Read-Host "用語集JSONのパス（空欄でなし）"
+        if (-not [string]::IsNullOrWhiteSpace($plamo_glossary)) {
+            $plamo_glossary = $plamo_glossary -replace '"', ''
+            if (-not (Test-Path -LiteralPath $plamo_glossary -PathType Leaf)) {
+                Write-Log "エラー: 用語集ファイルが見つからぬぞ: $plamo_glossary" "Red"
+                exit 1
+            }
+            $args_list += "--plamo-glossary", "$plamo_glossary"
+        }
+        $plamo_context = Read-Host "参考文脈のUTF-8テキストファイル（空欄で自動文脈のみ）"
+        if (-not [string]::IsNullOrWhiteSpace($plamo_context)) {
+            $plamo_context = $plamo_context -replace '"', ''
+            if (-not (Test-Path -LiteralPath $plamo_context -PathType Leaf)) {
+                Write-Log "エラー: 文脈ファイルが見つからぬぞ: $plamo_context" "Red"
+                exit 1
+            }
+            $args_list += "--plamo-context-file", "$plamo_context"
+        }
+        $plamo_history = Read-Host "直前の対訳を何件参考にするか？ [Enter: 3 / 0: 無効 / 最大10]"
+        if (-not [string]::IsNullOrWhiteSpace($plamo_history)) {
+            if ($plamo_history -notmatch '^\d+    }
+    Default {
+        Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
+        $args_list += "--engine", "google"
+    }
+}
+#endregion
+
+#region 入出力パス設定
+# 4. フォルダパスの入力
+if ([string]::IsNullOrWhiteSpace($InputPath)) {
+    Write-Host ""
+    Write-Host "翻訳対象のMod/Shaderフォルダをドラッグ＆ドロップせよ:" -ForegroundColor Green
+    $InputPath = Read-Host "> "
+}
+$InputPath = $InputPath -replace '"', ''
+
+if (-not (Test-Path $InputPath)) {
+    Write-Log "エラー: そのフォルダは見つからぬぞ: $InputPath" "Red"
+    Write-Host "何かキーを押すと終了します..." -NoNewline
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit
+}
+$args_list += "--input", "$InputPath"
+
+# 5. 出力先
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    Write-Host ""
+    Write-Host "出力先リソースパック名（またはフルパス）を入力せよ:" -ForegroundColor Green
+    $OutputPath = Read-Host "> "
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $OutputPath = "Output_Pack"
+    }
+}
+$OutputPath = $OutputPath -replace '"', ''
+$args_list += "--output", "$OutputPath"
+#endregion
+
+#region スクリプト実行
+# 6. Pythonスクリプト実行
+Write-Host ""
+Write-Log "よし、翻訳開始じゃ！" "Green"
+
+# デバッグ表示用
+$debug_args = $args_list | ForEach-Object { if ($_ -match " ") { """$_""" } else { $_ } }
+Write-Host "実行コマンド: $PY_EXEC $SCRIPT_NAME $debug_args" -ForegroundColor DarkGray
+Write-Host "--------------------------------------------------"
+
+& $PY_EXEC $SCRIPT_NAME @args_list
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Log "エラー: 翻訳スクリプトが異常終了したようじゃ。" "Red"
+    Write-Host "上記のエラーメッセージを確認するのじゃ。" -ForegroundColor Red
+}
+else {
+    Write-Host ""
+    Write-Log "処理完了じゃ。お疲れ様。" "Green"
+}
+
+Write-Host "何かキーを押すと終了します..." -NoNewline
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+#endregion -or [int]$plamo_history -gt 10) {
+                Write-Log "エラー: 履歴数は0から10の整数を入力するのじゃ。" "Red"
+                exit 1
+            }
+            $args_list += "--plamo-history", "$plamo_history"
+        }
     }
     Default {
         Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
