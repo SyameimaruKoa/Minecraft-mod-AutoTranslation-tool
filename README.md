@@ -30,7 +30,7 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
 
   - **Gemma 限定モード** : 高効率な「Gemma」モデルのみを使用するモード。Geminiが利用できない環境や、レート制限回避に最適。
 
-- **PLaMo 3 Translate** : 翻訳専用モデルを公式形式（PFML3）で呼び出す。llama.cppのOpenAI互換Completions APIに対応。
+- **PLaMo 3 Translate** : LM StudioのOpenAI互換Completions APIに接続し、公式PFML3形式で翻訳する。
 
 - **Local / Cloud AI (Ollama / LM Studio / Google Colab)(推奨)** : ローカルPC、または Google Colab などの外部 GPU サーバーの LLM を使用。完全無料・無制限。
 
@@ -185,34 +185,25 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
 
 
 
-- **[4] PLaMo 3 Translate (専用エンジン)** :
+- **[4] PLaMo 3 Translate（LM Studio）** :
 
-  - Preferred Networksの翻訳特化モデルを、ローカルのllama.cppサーバーから利用する。
-  - JSON一括生成は使わず、公式のPFML3形式で文字列ごとに英語→日本語翻訳する。
-  - 重複文字列は一度だけ翻訳し、既存のキャッシュ・中断再開の仕組みを利用する。
-  - `§a`などの色コード、`%s`などの書式指定子、`{name}`などの変数が変わった翻訳結果は再試行し、3回失敗した文字列は原文のまま残す。
+  - Preferred Networksの翻訳特化モデルを**LM Studio**から利用する。llama.cppを別途起動する必要はない。
+  - 公式のPFML3形式で英語から日本語に翻訳し、既存のキャッシュ・中断再開機能を使用する。
+  - 重複文字列は1回だけ翻訳する。`§a`などの色コード、`%s`などの書式指定子、`{name}`などの変数を照合し、壊れた訳文は再試行して採用しない。
+  - **セットアップ:**
+    1. LM Studioの「Discover」から[公式PLaMo 3 Translate 2B GGUF](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)（例: Q4_K_M）をダウンロードする。見つからなければGGUFを入手し、[LM Studioへインポート](https://lmstudio.ai/docs/app/advanced/import-model)する。
+    2. LM StudioでPLaMo 3 Translateをロードし、「Developer」タブでAPIサーバーを**Start Server**する（通常はポート1234）。
+    3. `run.bat`を実行し、メニュー**[4]**を選ぶ。URLはEnterで標準値（`http://127.0.0.1:1234/v1/completions`）。
+    4. モデルIDはEnterで自動検出する。複数のPLaMoモデルが見つかる場合は、LM StudioのモデルID（`GET http://localhost:1234/v1/models`で確認可能）を入力する。
+    5. 日本語の文体を選択する（標準は常体、選択で敬体）。
+  - **コマンドラインから実行（例）:**
 
-  **Windowsでのセットアップ例（PLaMo 3 Translate 2B / Q4_K_M）**
+    ```powershell
+    python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-form plain
+    ```
 
-  1. [llama.cpp](https://github.com/ggml-org/llama.cpp) をインストールする。Windowsでは `winget install llama.cpp` も利用できる。PLaMo 3対応の新しいバージョンを使用すること。
-  2. 別のターミナルでサーバーを起動する（初回はモデルをダウンロードする）。
-
-     ```powershell
-     llama-server -hf pfnet/plamo-3-translate-2b-GGUF:Q4_K_M --port 8080 --alias plamo-3-translate --jinja --no-prefill-assistant
-     ```
-
-  3. `run.bat` のメニューで **[4]** を選び、API URLはEnterで標準値（`http://127.0.0.1:8080/v1/completions`）を使用する。
-  4. 必要に応じて日本語の文体を選ぶ。標準は常体（`plain`）、敬体（`polite`）も選べる。
-
-  2B以外にも公式の0.8B・8B・31B版GGUFを利用できる。`--model`にはllama.cppの`--alias`で指定したモデル名を渡す。モデルの仕様とライセンスは[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
-
-  **コマンドラインからの実行例:**
-
-  ```powershell
-  python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-form plain
-  ```
-
-  APIのポート・接続先を変更した場合は`--plamo-api-url`を指定する。既存キャッシュを無視してPLaMoで翻訳し直す場合は`--force`を併用する。
+  - APIサーバーの接続先変更は`--plamo-api-url`、モデルIDの直接指定は`--model`を使用する。キャッシュにある文章を翻訳し直す場合は`--force`を併用する。
+  - 公式モデルの0.8B・2B・8B・31B（GGUF対応）から適切なサイズを選べる。モデルの詳細は[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
 
 ### 手順 3: フォルダの指定
 
