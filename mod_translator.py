@@ -692,7 +692,10 @@ def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form
             try:
                 response = requests.post(api_url, json=payload, timeout=120)
                 response.raise_for_status()
-                translated = response.json()["choices"][0]["text"].strip()
+                choice = response.json()["choices"][0]
+                if choice.get("finish_reason") == "length":
+                    raise ValueError("生成がmax_tokensの上限で途切れた")
+                translated = choice["text"].strip()
                 result = prefix + translated + suffix
                 if not is_valid_translation(source, result):
                     raise ValueError("空の翻訳結果、またはエラー文字列")
