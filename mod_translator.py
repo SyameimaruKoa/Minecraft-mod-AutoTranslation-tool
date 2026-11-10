@@ -17,8 +17,7 @@ GEMINI_API_URL = (
 GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?key={}"
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
 LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
-PLAMO_API_URL = "http://127.0.0.1:8080/v1/completions"
-PLAMO_DEFAULT_MODEL = "plamo-3-translate"
+PLAMO_API_URL = "http://127.0.0.1:1234/v1/completions"
 PLAMO_STOP_TOKENS = ["<|plamo:tag|>", "<|plamo:bos|>"]
 PLAMO_FORMAT_PATTERN = re.compile(
     r"§[0-9a-fk-orA-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}"
@@ -659,6 +658,41 @@ def build_plamo_prompt(source, form="plain"):
     )
 
 
+def resolve_plamo_model(api_url):
+    """接続先のモデル一覧から PLaMo 3 Translate を特定する。"""
+    models_url = api_url.rsplit("/", 1)[0] + "/models"
+    try:
+        response = requests.get(models_url, timeout=10)
+        response.raise_for_status()
+        available = response.json().get("data", [])
+    except requests.RequestException as e:
+        raise RuntimeError(
+            f"LM Studioのモデル一覧を取得できません: {models_url}"
+        ) from e
+    except (ValueError, AttributeError, TypeError) as e:
+        raise RuntimeError("LM Studioのモデル一覧の形式が不正です") from e
+
+    candidates = [
+        item["id"] for item in available
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and "plamo-3-translate" in item["id"].lower()
+    ]
+    if len(candidates) == 1:
+        print(f"情報: PLaMo 3 Translateを自動選択: {candidates[0]}")
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError(
+            "PLaMo 3 TranslateがLM Studioのモデル一覧にありません。"
+            "モデルをロードするか --model でモデルIDを指定してください。"
+        )
+    raise RuntimeError(
+        "PLaMo 3 Translateが複数見つかりました: "
+        + ", ".join(candidates)
+        + "。--model でモデルIDを指定してください。"
+    )
+
+
 def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain"):
     """専用の Completions API を使い、原文ごとに翻訳する。"""
     translated_results = {}
@@ -668,7 +702,7 @@ def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form
 
     total = len(unique_texts)
     start_time = time.time()
-    model = model_name or PLAMO_DEFAULT_MODEL
+    model = model_name or resolve_plamo_model(api_url)
 
     for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
         if not source.strip():
@@ -974,7 +1008,7 @@ if __name__ == "__main__":
         "--engine", choices=["google", "gemini", "ollama", "lmstudio", "plamo"], default="google"
     )
     parser.add_argument("--key", help="Gemini APIキー")
-    parser.add_argument("--model", help="使用モデル名（PLaMoはサーバーのモデルID/alias）")
+    parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
