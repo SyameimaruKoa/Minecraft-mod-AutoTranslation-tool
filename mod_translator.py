@@ -17,6 +17,12 @@ GEMINI_API_URL = (
 GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?key={}"
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
 LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
+PLAMO_API_URL = "http://127.0.0.1:8080/v1/completions"
+PLAMO_DEFAULT_MODEL = "plamo-3-translate"
+PLAMO_STOP_TOKENS = ["<|plamo:tag|>", "<|plamo:bos|>"]
+PLAMO_FORMAT_PATTERN = re.compile(
+    r"§[0-9a-fk-orA-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}"
+)
 
 # 翻訳除外キー（これらは翻訳しない）
 IGNORE_KEYS = [
@@ -638,6 +644,81 @@ def translate_with_gemini(text_dict, api_key, selector):
     return translated_results
 
 
+def build_plamo_prompt(source, form="plain"):
+    """PLaMo 3 Translate が要求する PFML3 プロンプトを生成する。"""
+    return (
+        "<|plamo:tag|>dataset<|plamo:msg|>translation"
+        "<|plamo:tag|>context<|plamo:msg|>"
+        "MinecraftのModに登場するゲーム内UI、アイテム名、設定、説明文です。"
+        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+        + source
+        + "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja"
+        + "<|plamo:key|>form<|plamo:val|>"
+        + form
+        + "<|plamo:msg|>"
+    )
+
+
+def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain"):
+    """専用の Completions API を使い、原文ごとに翻訳する。"""
+    translated_results = {}
+    unique_texts = {}
+    for key, source in text_dict.items():
+        unique_texts.setdefault(source, []).append(key)
+
+    total = len(unique_texts)
+    start_time = time.time()
+    model = model_name or PLAMO_DEFAULT_MODEL
+
+    for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
+        if not source.strip():
+            for key in source_keys:
+                translated_results[key] = source
+            continue
+
+        prefix = source[:len(source) - len(source.lstrip())]
+        suffix = source[len(source.rstrip()):]
+        expected_formats = PLAMO_FORMAT_PATTERN.findall(source)
+        payload = {
+            "model": model,
+            "prompt": build_plamo_prompt(source.strip(), form),
+            "temperature": 0,
+            "max_tokens": 512,
+            "stop": PLAMO_STOP_TOKENS,
+            "stream": False,
+        }
+
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(api_url, json=payload, timeout=120)
+                response.raise_for_status()
+                translated = response.json()["choices"][0]["text"].strip()
+                result = prefix + translated + suffix
+                if not is_valid_translation(source, result):
+                    raise ValueError("空の翻訳結果、またはエラー文字列")
+                if PLAMO_FORMAT_PATTERN.findall(result) != expected_formats:
+                    raise ValueError("色コード・フォーマット指定子・変数が原文と一致しない")
+                for key in source_keys:
+                    translated_results[key] = result
+                break
+            except requests.exceptions.ConnectionError as e:
+                raise RuntimeError(
+                    f"PLaMoサーバーに接続できません: {api_url}"
+                ) from e
+            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
+                print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
+                if attempt < 3:
+                    time.sleep(1)
+        else:
+            print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
+
+        elapsed = time.time() - start_time
+        eta = format_time(elapsed / processed * (total - processed))
+        print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
+
+    return translated_results
+
+
 def translate_local_llm(text_dict, engine, model_name):
     BATCH_SIZE = 20
     url = OLLAMA_API_URL if engine == "ollama" else LMSTUDIO_API_URL
@@ -713,6 +794,8 @@ class ModTranslator:
         self.engine = args.engine
         self.api_key = args.key
         self.model_name = args.model
+        self.plamo_api_url = args.plamo_api_url
+        self.plamo_form = args.plamo_form
         self.gemma_only = args.gemma_only
         self.force = args.force
 
@@ -809,6 +892,15 @@ class ModTranslator:
                             if original_text:
                                 new_translations[original_text] = v
 
+                    elif self.engine == "plamo":
+                        new_translations_raw = translate_with_plamo(
+                            to_translate, self.model_name, self.plamo_api_url, self.plamo_form
+                        )
+                        for k, v in new_translations_raw.items():
+                            original_text = content.get(k)
+                            if original_text:
+                                new_translations[original_text] = v
+
                     self.cache.update(new_translations)
                     save_json(self.cache_file, self.cache)
 
@@ -876,10 +968,12 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--input", required=True, help="入力フォルダ")
     parser.add_argument("-o", "--output", default="Output_Pack", help="出力フォルダ")
     parser.add_argument(
-        "--engine", choices=["google", "gemini", "ollama", "lmstudio"], default="google"
+        "--engine", choices=["google", "gemini", "ollama", "lmstudio", "plamo"], default="google"
     )
     parser.add_argument("--key", help="Gemini APIキー")
-    parser.add_argument("--model", help="使用モデル名")
+    parser.add_argument("--model", help="使用モデル名（PLaMoはサーバーのモデルID/alias）")
+    parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
+    parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
