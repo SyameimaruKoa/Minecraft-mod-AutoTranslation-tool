@@ -205,6 +205,51 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
   - APIサーバーの接続先変更は`--plamo-api-url`、モデルIDの直接指定は`--model`を使用する。キャッシュにある文章を翻訳し直す場合は`--force`を併用する。
   - 公式モデルの0.8B・2B・8B・31B（GGUF対応）から適切なサイズを選べる。モデルの詳細は[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
 
+### PLaMo 3 Translateの翻訳品質を高める設定
+
+PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。
+
+- **自動参考文脈:** Modのファイル名、言語ファイル、各キーを文脈として送る。さらに個別の設定や背景説明は`--plamo-context`または`--plamo-context-file`で追加できる。
+- **用語集:** `plamo_glossary.example.json`をコピー・編集して`--plamo-glossary`へ指定する。原語と訳語を固定できる。**デフォルトでは用語を強制せず、指定された用語集のみ使用する。**
+- **対訳履歴:** 同一言語ファイルで直前に翻訳した短い文章を最大3件参考にする（`--plamo-history 0`で無効化、最大10）。最初の翻訳と訳語・文体を揃えやすくするための機能じゃ。
+- **堅牢性:** 番号付き`%1$s`・`%2$s`の語順入替を許容し、番号なしの書式、`§a`や`&a`の色コード、`<amount>`の変数、改行の欠落は防ぐ。長文は出力上限を拡張し、打切り時は増やして再試行する。
+- **キャッシュ:** PLaMo専用`plamo_cache.json`にMod・キー・モデル・用語集・文脈ごとに保存する。翻訳が1件成功するたびに保存するので途中でサーバーが切れてもそれまでの訳文が残る。既存`trans_cache.json`は従来のエンジン用として保持する。
+
+例：用語集ファイル（`plamo_glossary.example.json`を編集して使用）
+
+```json
+{
+    "Tin": "スズ",
+    "Digital Miner": "デジタルマイナー",
+    "Redstone": "レッドストーン"
+}
+```
+
+例：参考文脈ファイル（UTF-8の任意のテキスト）
+
+```text
+This is the translation of item names and tooltips for a technology-focused Minecraft mod.
+「bank」が川や川岸を指す場面では、その情景を参考に翻訳する。
+```
+
+コマンドラインから指定するときの例：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-glossary "plamo_glossary.example.json" --plamo-context-file "my_mod_context.txt" --plamo-history 3
+```
+
+`run.bat`の[4]メニューでも用語集・文脈ファイル・履歴数を指定できる。なお、用語集の内容を変更すると設定別キャッシュを切り替えて翻訳をやり直す設計じゃ。
+
+### 検証コマンド
+
+Pythonのライブラリは必ず仮想環境へインストールする。既存の`venv`があれば流用可能。
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install deep-translator requests python-dotenv
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
 ### 手順 3: フォルダの指定
 
 
