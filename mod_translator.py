@@ -21,7 +21,7 @@ LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 PLAMO_API_URL = "http://127.0.0.1:1234/v1/completions"
 PLAMO_STOP_TOKENS = ["<|plamo:tag|>", "<|plamo:bos|>"]
 PLAMO_FORMAT_PATTERN = re.compile(
-    r"§[0-9a-fk-orA-FK-OR]|&[0-9a-fk-or]|(?<![A-Za-z0-9])&[A-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}|<[A-Za-z_][\w.:-]*>"
+    r"§[0-9a-fk-orA-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}|<[A-Za-z_][\w.:-]*>"
 )
 
 # 翻訳除外キー（これらは翻訳しない）
