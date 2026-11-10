@@ -4,9 +4,9 @@ from unittest.mock import Mock, patch
 from mod_translator import build_plamo_prompt, translate_with_plamo
 
 
-def response_with(text):
+def response_with(text, finish_reason="stop"):
     response = Mock()
-    response.json.return_value = {"choices": [{"text": text}]}
+    response.json.return_value = {"choices": [{"text": text, "finish_reason": finish_reason}]}
     return response
 
 
@@ -46,6 +46,13 @@ class PlamoTranslationTests(unittest.TestCase):
         post.return_value = response_with("石 %d")
         self.assertEqual(translate_with_plamo({"a": "Stone %s"}), {})
         self.assertEqual(post.call_count, 3)
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_retries_truncated_responses(self, post, sleep):
+        post.side_effect = [response_with("不完全", "length"), response_with("完全")]
+        self.assertEqual(translate_with_plamo({"a": "Complete"}), {"a": "完全"})
+        self.assertEqual(post.call_count, 2)
 
     @patch("mod_translator.requests.post")
     def test_fails_fast_when_server_is_unavailable(self, post):
