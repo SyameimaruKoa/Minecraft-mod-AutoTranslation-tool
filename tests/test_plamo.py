@@ -1,11 +1,20 @@
+import json
+import os
+import tempfile
 import unittest
+import zipfile
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from mod_translator import build_plamo_prompt, resolve_plamo_model, translate_with_plamo
+from mod_translator import (
+    ModTranslator, build_plamo_prompt, load_plamo_glossary,
+    plamo_format_is_preserved, relevant_plamo_glossary,
+    resolve_plamo_model, translate_with_plamo
+)
 
 
 def response_with(text, finish_reason="stop"):
-    response = Mock()
+    response = Mock(status_code=200, text="")
     response.json.return_value = {"choices": [{"text": text, "finish_reason": finish_reason}]}
     return response
 
@@ -42,6 +51,123 @@ class PlamoTranslationTests(unittest.TestCase):
         get.return_value.json.return_value = {"data": [{"id": "qwen3-8b"}]}
         with self.assertRaisesRegex(RuntimeError, "PLaMo 3 TranslateがLM Studio"):
             resolve_plamo_model("http://127.0.0.1:1234/v1/completions")
+
+    def test_context_history_and_glossary_follow_official_pfml3_order(self):
+        context = "This text is from a Minecraft technology mod."
+        prompt = build_plamo_prompt(
+            "Mekanism Digital Miner", context=context,
+            glossary=[{"source": "Digital Miner", "target": "デジタルマイナー"}],
+            history=[("Tin Ore", "スズ鉱石")]
+        )
+        self.assertLess(prompt.index("<|plamo:tag|>context"), prompt.index("Tin Ore"))
+        self.assertLess(prompt.index("スズ鉱石"), prompt.index("<|plamo:tag|>glossary"))
+        self.assertLess(prompt.index("<|plamo:tag|>glossary"), prompt.index("<|plamo:tag|>input", prompt.index("スズ鉱石")))
+        self.assertIn("<|plamo:index|>Digital Miner<|plamo:item|>デジタルマイナー", prompt)
+        self.assertTrue(prompt.endswith("<|plamo:msg|>"))
+
+    def test_glossary_json_and_source_word_boundaries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "terms.json")
+            with open(path, "w", encoding="utf-8") as output:
+                json.dump({"Tin": "スズ", "Digital Miner": "デジタルマイナー"}, output, ensure_ascii=False)
+            glossary = load_plamo_glossary(path)
+        self.assertEqual(len(glossary), 2)
+        self.assertEqual(relevant_plamo_glossary("Tin Ore", glossary), [glossary[0]])
+        self.assertEqual(relevant_plamo_glossary("Settings", glossary), [])
+        self.assertEqual(relevant_plamo_glossary("Use Digital Miner", glossary), [glossary[1]])
+
+    def test_numbered_placeholders_can_reorder(self):
+        self.assertTrue(plamo_format_is_preserved("%1$s crafted %2$s", "%2$sを%1$sが作った"))
+        self.assertFalse(plamo_format_is_preserved("%1$s crafted %2$s", "%2$sを%2$sが作った"))
+        self.assertFalse(plamo_format_is_preserved("Give %s to %d", "%dに%sを与える"))
+        self.assertTrue(plamo_format_is_preserved("Give %s to %d", "%sに%dを与える"))
+
+    def test_minecraft_colors_tags_and_linebreaks(self):
+        self.assertTrue(plamo_format_is_preserved("&a§c%1$s <amount>\nNext", "<amount> §c%1$s &a\n次"))
+        self.assertFalse(plamo_format_is_preserved("&aHello", "&bこんにちは"))
+        self.assertFalse(plamo_format_is_preserved("Set <amount>", "値を設定"))
+
+    @patch("mod_translator.requests.get")
+    def test_loaded_model_preferred_when_multiple_downloaded(self, get):
+        listed = Mock()
+        listed.json.return_value = {
+            "data": [{"id": "plamo-3-translate-2b"}, {"id": "plamo-3-translate-8b"}]
+        }
+        states = Mock()
+        states.json.return_value = {
+            "data": [
+                {"id": "plamo-3-translate-2b", "state": "not-loaded"},
+                {"id": "plamo-3-translate-8b", "state": "loaded"},
+            ]
+        }
+        get.side_effect = [listed, states]
+        self.assertEqual(
+            resolve_plamo_model("http://127.0.0.1:1234/v1/completions"),
+            "plamo-3-translate-8b"
+        )
+
+    @patch("mod_translator.requests.post")
+    def test_http_errors_abort_immediately(self, post):
+        post.return_value = Mock(status_code=400, text='{"error":"Failed to load model"}')
+        with self.assertRaisesRegex(RuntimeError, "Failed to load model"):
+            translate_with_plamo({"a": "Stone", "b": "Wood"}, model_name="plamo-3-translate-2b")
+        self.assertEqual(post.call_count, 1)
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_truncation_increases_output_limit(self, post, sleep):
+        post.side_effect = [response_with("石", "length"), response_with("石")]
+        self.assertEqual(
+            translate_with_plamo({"a": "Stone"}, model_name="plamo-3-translate-2b"),
+            {"a": "石"}
+        )
+        limits = [call.kwargs["json"]["max_tokens"] for call in post.call_args_list]
+        self.assertEqual(limits, [512, 1024])
+
+    @patch("mod_translator.requests.post")
+    def test_successful_previous_translation_sent_as_history(self, post):
+        post.side_effect = [response_with("スズ鉱石"), response_with("スズインゴット")]
+        result = translate_with_plamo(
+            {"a": "Tin Ore", "b": "Tin Ingot"}, model_name="plamo-3-translate-2b",
+            glossary=[{"source": "Tin", "target": "スズ"}], history_size=3
+        )
+        self.assertEqual(result["b"], "スズインゴット")
+        second_prompt = post.call_args_list[1].kwargs["json"]["prompt"]
+        self.assertIn("<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>スズ鉱石", second_prompt)
+        self.assertIn("<|plamo:tag|>glossary<|plamo:index|>Tin<|plamo:item|>スズ", second_prompt)
+
+    @patch("mod_translator.requests.post")
+    def test_cache_survives_failed_request_mid_file(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            os.makedirs(mods)
+            output = os.path.join(folder, "pack")
+            with zipfile.ZipFile(os.path.join(mods, "demo.jar"), "w") as archive:
+                archive.writestr(
+                    "assets/demo/lang/en_us.json",
+                    json.dumps({"item.demo.stone": "Stone", "item.demo.wood": "Wood"})
+                )
+            opts = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-2b", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
+            )
+            from requests.exceptions import ConnectionError
+            post.side_effect = [response_with("石"), ConnectionError("offline")]
+            with self.assertRaisesRegex(RuntimeError, "PLaMoサーバーに接続できません"):
+                ModTranslator(opts).run()
+            cache_path = os.path.join(output, "plamo_cache.json")
+            with open(cache_path, encoding="utf-8") as saved:
+                self.assertEqual(len(json.load(saved)), 1)
+            post.reset_mock()
+            post.side_effect = None
+            post.return_value = response_with("木")
+            ModTranslator(opts).run()
+            self.assertEqual(post.call_count, 1)
+            translated_path = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(translated_path, encoding="utf-8") as saved:
+                self.assertEqual(json.load(saved), {"item.demo.stone": "石", "item.demo.wood": "木"})
 
     @patch("mod_translator.requests.post")
     def test_calls_completions_api_once_per_unique_text(self, post):
