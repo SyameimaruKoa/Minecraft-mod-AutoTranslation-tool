@@ -1,0 +1,22 @@
+name: Python tests
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+jobs:
+    unittest:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+            - name: Create Python virtual environment
+              run: python -m venv .venv
+            - name: Install test dependencies
+              run: .venv/bin/python -m pip install deep-translator requests python-dotenv
+            - name: Run unit tests
+              run: .venv/bin/python -m unittest discover -s tests -v
