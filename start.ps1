@@ -161,7 +161,7 @@ Write-Host "翻訳エンジンを選択するのじゃ:" -ForegroundColor Green
 Write-Host " [1] Google Translate (無料/キー不要/精度並)"
 Write-Host " [2] Gemini AI (高速/要APIキー/高精度 - 推奨)"
 Write-Host " [3] Local LLM (Ollama/LM Studio)"
-Write-Host " [4] PLaMo 3 Translate (llama.cpp)"
+Write-Host " [4] PLaMo 3 Translate (LM Studio)"
 Write-Host ""
 
 $engine_choice = Read-Host "番号を入力 [1-4]"
@@ -233,10 +233,14 @@ switch ($engine_choice) {
     }
     "4" {
         $args_list += "--engine", "plamo"
-        Write-Log "PLaMo 3 Translate: llama.cppのサーバーを起動しておくのじゃ。" "Cyan"
-        $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:8080/v1/completions)"
+        Write-Log "PLaMo 3 Translate: LM StudioのAPIサーバーを起動しておくのじゃ。" "Cyan"
+        $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:1234/v1/completions)"
         if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
             $args_list += "--plamo-api-url", "$plamo_url"
+        }
+        $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
+        if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
+            $args_list += "--model", "$plamo_model"
         }
         $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
         if ($plamo_form -eq "2") {
