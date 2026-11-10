@@ -816,7 +816,7 @@ def translate_with_plamo(
         for attempt in range(1, 4):
             try:
                 read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
-                response = requests.post(api_url, json=payload, timeout=(10, read_timeout))
+                response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
                 if response.status_code >= 400:
                     raise RuntimeError(
                         f"LM Studio / PLaMo API HTTP {response.status_code}: "
