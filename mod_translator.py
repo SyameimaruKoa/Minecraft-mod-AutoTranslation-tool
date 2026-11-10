@@ -20,7 +20,7 @@ LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 PLAMO_API_URL = "http://127.0.0.1:1234/v1/completions"
 PLAMO_STOP_TOKENS = ["<|plamo:tag|>", "<|plamo:bos|>"]
 PLAMO_FORMAT_PATTERN = re.compile(
-    r"§[0-9a-fk-orA-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}"
+    r"§[0-9a-fk-orA-FK-OR]|&[0-9a-fk-orA-FK-OR]|%(?:\d+\$)?[-+# 0,]*\d*(?:\.\d+)?[a-zA-Z%]|\{[\w.:-]+\}|<[A-Za-z_][\w.:-]*>"
 )
 
 # 翻訳除外キー（これらは翻訳しない）
@@ -643,18 +643,75 @@ def translate_with_gemini(text_dict, api_key, selector):
     return translated_results
 
 
-def build_plamo_prompt(source, form="plain"):
-    """PLaMo 3 Translate が要求する PFML3 プロンプトを生成する。"""
+def load_plamo_glossary(path):
+    """JSONの用語集を公式PFML3用語集形式に正規化する。"""
+    if not path:
+        return []
+    with open(path, "r", encoding="utf-8-sig") as file:
+        raw = json.load(file)
+    if isinstance(raw, dict):
+        raw = [{"source": key, "target": value} for key, value in raw.items()]
+    if not isinstance(raw, list):
+        raise ValueError("PLaMoの用語集はJSONオブジェクトまたはsource/targetの配列が必要です")
+    glossary = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("source"), str) or not isinstance(item.get("target"), str):
+            raise ValueError("用語集の項目には文字列のsourceとtargetが必要です")
+        source, target = item["source"].strip(), item["target"].strip()
+        if not source or not target or "<|plamo:" in source or "<|plamo:" in target:
+            raise ValueError("用語集の空欄またはPFML3制御トークンは使用できません")
+        glossary.append({"source": source, "target": target})
+    return glossary
+
+
+def relevant_plamo_glossary(source, glossary):
+    """単語の一部への誤適用を避け、該当する用語だけをプロンプトに渡す。"""
+    return [
+        item for item in glossary
+        if re.search(r"(?<!\w)" + re.escape(item["source"]) + r"(?!\w)", source, re.IGNORECASE)
+    ]
+
+
+def build_plamo_prompt(source, form="plain", context=None, glossary=None, history=None):
+    """公式PFML3のcontext→履歴→glossary→input→outputの順序で構築する。"""
+    prompt = "<|plamo:tag|>dataset<|plamo:msg|>translation"
+    if context is None:
+        context = "MinecraftのModに登場するゲーム内UI、アイテム名、設定、説明文です。"
+    if context:
+        prompt += "<|plamo:tag|>context<|plamo:msg|>" + context
+    for old_source, old_target in history or []:
+        prompt += (
+            "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+            + old_source
+            + "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
+            + old_target
+        )
+    if glossary:
+        prompt += "<|plamo:tag|>glossary"
+        for item in glossary:
+            prompt += "<|plamo:index|>" + item["source"] + "<|plamo:item|>" + item["target"]
     return (
-        "<|plamo:tag|>dataset<|plamo:msg|>translation"
-        "<|plamo:tag|>context<|plamo:msg|>"
-        "MinecraftのModに登場するゲーム内UI、アイテム名、設定、説明文です。"
-        "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+        prompt
+        + "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
         + source
         + "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja"
-        + "<|plamo:key|>form<|plamo:val|>"
-        + form
-        + "<|plamo:msg|>"
+        + "<|plamo:key|>form<|plamo:val|>" + form + "<|plamo:msg|>"
+    )
+
+
+def plamo_format_is_preserved(source, translated):
+    """番号付き引数の順序変更は許し、番号なし引数の順序を厳密に保つ。"""
+    expected = PLAMO_FORMAT_PATTERN.findall(source)
+    actual = PLAMO_FORMAT_PATTERN.findall(translated)
+    numbered = lambda tokens: sorted(t for t in tokens if re.match(r"%\d+\$", t))
+    unnumbered = lambda tokens: [t for t in tokens if t.startswith("%") and not re.match(r"%\d+\$", t)]
+    others = lambda tokens: sorted(t for t in tokens if not t.startswith("%"))
+    return (
+        numbered(expected) == numbered(actual)
+        and unnumbered(expected) == unnumbered(actual)
+        and others(expected) == others(actual)
+        and source.count("\n") == translated.count("\n")
+        and source.count("\\n") == translated.count("\\n")
     )
 
 
