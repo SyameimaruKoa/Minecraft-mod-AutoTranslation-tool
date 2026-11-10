@@ -83,14 +83,16 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertTrue(plamo_format_is_preserved("Give %s to %d", "%sに%dを与える"))
 
     def test_minecraft_colors_tags_and_linebreaks(self):
-        self.assertTrue(plamo_format_is_preserved("&a§c%1$s <amount>\nNext", "<amount> §c%1$s &a\n次"))
-        self.assertFalse(plamo_format_is_preserved("&aHello", "&bこんにちは"))
+        self.assertTrue(plamo_format_is_preserved("§a§C%1$s <amount>\nNext", "<amount> §C%1$s §a\n次"))
+        self.assertFalse(plamo_format_is_preserved("§aHello", "§bこんにちは"))
+        self.assertFalse(plamo_format_is_preserved("§AHello", "§Bこんにちは"))
         self.assertFalse(plamo_format_is_preserved("Set <amount>", "値を設定"))
         self.assertTrue(plamo_format_is_preserved("Q&A", "質問と回答"))
         self.assertTrue(plamo_format_is_preserved("R&D", "研究開発"))
         self.assertTrue(plamo_format_is_preserved("B&B", "民宿"))
-        self.assertFalse(plamo_format_is_preserved("Color&aGreen", "緑色"))
-        self.assertFalse(plamo_format_is_preserved("&AColor", "&B色"))
+        self.assertTrue(plamo_format_is_preserved("&aHello", "&bこんにちは"))
+        self.assertTrue(plamo_format_is_preserved("Color&aGreen", "緑色"))
+        self.assertTrue(plamo_format_is_preserved("&AColor", "&B色"))
 
     @patch("mod_translator.requests.get")
     def test_loaded_model_preferred_when_multiple_downloaded(self, get):
