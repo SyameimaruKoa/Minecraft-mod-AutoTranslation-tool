@@ -750,8 +750,11 @@ def resolve_plamo_model(api_url):
     )
 
 
-def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain"):
-    """専用の Completions API を使い、原文ごとに翻訳する。"""
+def translate_with_plamo(
+    text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
+    glossary=None, context=None, context_fn=None, history_size=3, on_translation=None
+):
+    """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
     unique_texts = {}
     for key, source in text_dict.items():
@@ -760,51 +763,79 @@ def translate_with_plamo(text_dict, model_name=None, api_url=PLAMO_API_URL, form
     total = len(unique_texts)
     start_time = time.time()
     model = model_name or resolve_plamo_model(api_url)
+    history = []
+    glossary = glossary or []
 
     for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
         if not source.strip():
             for key in source_keys:
                 translated_results[key] = source
+                if on_translation:
+                    on_translation(key, source, source)
             continue
 
         prefix = source[:len(source) - len(source.lstrip())]
         suffix = source[len(source.rstrip()):]
-        expected_formats = PLAMO_FORMAT_PATTERN.findall(source)
+        key = source_keys[0]
+        entry_context = context_fn(key) if context_fn else context
+        if entry_context and "<|plamo:" in entry_context:
+            raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
+        prompt = build_plamo_prompt(
+            source.strip(), form,
+            context=entry_context,
+            glossary=relevant_plamo_glossary(source, glossary),
+            history=history[-history_size:] if history_size > 0 else []
+        )
+        max_tokens = max(512, min(4096, len(source) // 2 + 128))
         payload = {
             "model": model,
-            "prompt": build_plamo_prompt(source.strip(), form),
+            "prompt": prompt,
             "temperature": 0,
-            "max_tokens": 512,
+            "max_tokens": max_tokens,
             "stop": PLAMO_STOP_TOKENS,
             "stream": False,
         }
+        translated_value = None
 
         for attempt in range(1, 4):
             try:
-                response = requests.post(api_url, json=payload, timeout=120)
-                response.raise_for_status()
+                read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
+                response = requests.post(api_url, json=payload, timeout=(10, read_timeout))
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"LM Studio / PLaMo API HTTP {response.status_code}: "
+                        + response.text[:1000]
+                    )
                 choice = response.json()["choices"][0]
                 if choice.get("finish_reason") == "length":
-                    raise ValueError("生成がmax_tokensの上限で途切れた")
+                    if payload["max_tokens"] < 4096:
+                        payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
+                    raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
                 translated = choice["text"].strip()
                 result = prefix + translated + suffix
                 if not is_valid_translation(source, result):
                     raise ValueError("空の翻訳結果、またはエラー文字列")
-                if PLAMO_FORMAT_PATTERN.findall(result) != expected_formats:
-                    raise ValueError("色コード・フォーマット指定子・変数が原文と一致しない")
-                for key in source_keys:
-                    translated_results[key] = result
+                if not plamo_format_is_preserved(source, result):
+                    raise ValueError("色コード・フォーマット指定子・変数・改行が原文と一致しない")
+                translated_value = result
                 break
             except requests.exceptions.ConnectionError as e:
-                raise RuntimeError(
-                    f"PLaMoサーバーに接続できません: {api_url}"
-                ) from e
+                raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
             except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
                 print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
                 if attempt < 3:
                     time.sleep(1)
-        else:
+
+        if translated_value is None:
             print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
+        else:
+            for current_key in source_keys:
+                translated_results[current_key] = translated_value
+                if on_translation:
+                    on_translation(current_key, source, translated_value)
+            if history_size > 0 and len(source) < 300 and len(translated_value) < 300:
+                history.append((source.strip(), translated_value.strip()))
+                history = history[-history_size:]
 
         elapsed = time.time() - start_time
         eta = format_time(elapsed / processed * (total - processed))
