@@ -3,6 +3,7 @@ import json
 import time
 import re
 import argparse
+import hashlib
 import zipfile
 import requests
 import traceback
@@ -921,6 +922,9 @@ class ModTranslator:
         self.model_name = args.model
         self.plamo_api_url = args.plamo_api_url
         self.plamo_form = args.plamo_form
+        self.plamo_history = args.plamo_history
+        self.plamo_glossary = []
+        self.plamo_context = ""
         self.gemma_only = args.gemma_only
         self.force = args.force
 
@@ -952,6 +956,39 @@ class ModTranslator:
                 print("エラー: Geminiを使用するにはAPIキーが必要です。")
                 exit(1)
 
+        if self.engine == "plamo":
+            self.model_name = self.model_name or resolve_plamo_model(self.plamo_api_url)
+            self.plamo_glossary = load_plamo_glossary(args.plamo_glossary)
+            context_parts = [args.plamo_context] if args.plamo_context else []
+            if args.plamo_context_file:
+                with open(args.plamo_context_file, "r", encoding="utf-8-sig") as file:
+                    context_parts.append(file.read().strip())
+            self.plamo_context = "\n".join(part for part in context_parts if part)
+            if "<|plamo:" in self.plamo_context:
+                raise ValueError("contextファイルにPFML3制御トークンは使用できません")
+            self.plamo_cache_file = os.path.join(self.output_dir, "plamo_cache.json")
+            self.plamo_cache = load_json(self.plamo_cache_file)
+            options = {
+                "model": self.model_name, "form": self.plamo_form,
+                "glossary": self.plamo_glossary, "context": self.plamo_context,
+                "history": self.plamo_history, "format_version": 2
+            }
+            self.plamo_settings_id = hashlib.sha256(
+                json.dumps(options, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            print(f"情報: PLaMo 3 Translate [{self.model_name}], 用語集 {len(self.plamo_glossary)}件")
+
+    def plamo_cache_key(self, filename, lang_path, key, source):
+        return json.dumps(
+            [self.plamo_settings_id, filename, lang_path, key, source],
+            ensure_ascii=False, separators=(",", ":")
+        )
+
+    def save_plamo_translation(self, filename, lang_path, key, source, translated):
+        cache_key = self.plamo_cache_key(filename, lang_path, key, source)
+        self.plamo_cache[cache_key] = translated
+        save_json(self.plamo_cache_file, self.plamo_cache)
+
     def run(self):
         print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
 
@@ -972,6 +1009,43 @@ class ModTranslator:
             pack_format = detect_pack_format(file_path)
 
             for lang_path, content in lang_files.items():
+                if self.engine == "plamo":
+                    to_translate = {
+                        key: source for key, source in content.items()
+                        if key not in IGNORE_KEYS and isinstance(source, str)
+                        and (self.force or self.plamo_cache_key(filename, lang_path, key, source) not in self.plamo_cache)
+                    }
+                    if to_translate:
+                        print(f"  -> PLaMo翻訳対象: {len(to_translate)} 項目")
+                        base_context = (
+                            "MinecraftのModに登場するゲーム内UI、アイテム名、設定、説明文です。"
+                            f" Mod: {filename}. 言語ファイル: {lang_path}."
+                        )
+                        if self.plamo_context:
+                            base_context += "\n" + self.plamo_context
+
+                        translate_with_plamo(
+                            to_translate, self.model_name, self.plamo_api_url, self.plamo_form,
+                            glossary=self.plamo_glossary,
+                            context_fn=lambda key: base_context + f" 翻訳対象のキー: {key}.",
+                            history_size=self.plamo_history,
+                            on_translation=lambda key, src, dst: self.save_plamo_translation(
+                                filename, lang_path, key, src, dst
+                            )
+                        )
+                    else:
+                        print("  -> 新規翻訳項目なし。完了。")
+                    translated_data = content.copy()
+                    for key, source in content.items():
+                        if isinstance(source, str) and key not in IGNORE_KEYS:
+                            cached = self.plamo_cache.get(
+                                self.plamo_cache_key(filename, lang_path, key, source)
+                            )
+                            if cached is not None:
+                                translated_data[key] = cached
+                    self.write_output(filename, lang_path, translated_data, pack_format)
+                    continue
+
                 to_translate = {}
                 for k, v in content.items():
                     if k in IGNORE_KEYS or not isinstance(v, str):
@@ -1099,10 +1173,16 @@ if __name__ == "__main__":
     parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
+    parser.add_argument("--plamo-glossary", help="PLaMo用語集のJSONファイル（原語と訳語）")
+    parser.add_argument("--plamo-context", default="", help="PLaMoの参考文脈（直接指定）")
+    parser.add_argument("--plamo-context-file", help="PLaMoの参考文脈を記したUTF-8テキストファイル")
+    parser.add_argument("--plamo-history", type=int, default=3, help="前の対訳を参考にする数（0で無効、既定3件）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
     args = parser.parse_args()
+    if args.plamo_history < 0 or args.plamo_history > 10:
+        parser.error("--plamo-history は0〜10を指定してください")
 
     translator = ModTranslator(args)
     translator.run()
