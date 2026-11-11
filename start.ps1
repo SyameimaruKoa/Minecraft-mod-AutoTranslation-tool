@@ -272,6 +272,23 @@ switch ($engine_choice) {
             }
             $args_list += "--plamo-history", "$plamo_history"
         }
+        $repair_model = Read-Host "構文修復モデルのLM StudioモデルID（空欄で無効 / 例: LFM2.5-1.2B-Instruct）"
+        if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
+            $args_list += "--repair-model", "$repair_model"
+            $repair_url = Read-Host "修復モデルのChat Completions API URL（Enterで http://localhost:1234/v1/chat/completions）"
+            if (-not [string]::IsNullOrWhiteSpace($repair_url)) {
+                $args_list += "--repair-api-url", "$repair_url"
+            }
+            Write-Log "翻訳モデルと修復モデルの両方をLM Studioで事前にロードするのじゃ。自動ロードは行わぬ。" "Cyan"
+            $repair_policy = Read-Host "モデルが未ロードの場合: [1] エラーで終了（既定）/ [2] 手動ロードまで待機"
+            if ($repair_policy -eq "2") {
+                $args_list += "--model-load-policy", "wait"
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($repair_policy) -and $repair_policy -ne "1") {
+                Write-Log "エラー: 1または2を入力するのじゃ。" "Red"
+                exit 1
+            }
+        }
     }
     Default {
         Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
