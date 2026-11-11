@@ -715,6 +715,20 @@ def mask_minecraft_style_codes(source):
     return PLAMO_STYLE_PATTERN.sub(mask, source), markers
 
 
+def split_trailing_label_format(source):
+    matches = list(PLAMO_FORMAT_PATTERN.finditer(source))
+    if len(matches) != 1 or matches[0].end() != len(source):
+        return source, ""
+    marker = matches[0]
+    if marker.group().startswith("§"):
+        return source, ""
+    prefix = source[:marker.start()]
+    match = re.fullmatch(r"(?s)(.+?)(:\s+)", prefix)
+    if not match or not match.group(1).strip():
+        return source, ""
+    return match.group(1), match.group(2) + marker.group()
+
+
 def mask_plamo_format_tokens(source, ignored=()):
     markers = []
     prefix = "mc_fmt"
@@ -936,7 +950,8 @@ def translate_with_plamo(
                     translated_parts.append(part)
                     continue
 
-                masked_source, style_markers = mask_minecraft_style_codes(part)
+                label_source, trailing_format = split_trailing_label_format(part)
+                masked_source, style_markers = mask_minecraft_style_codes(label_source)
                 masked_source, format_markers = mask_plamo_format_tokens(
                     masked_source, (marker for marker, _ in style_markers)
                 )
@@ -997,6 +1012,7 @@ def translate_with_plamo(
                             break
                         for marker, original_token in protected:
                             result = result.replace(marker, original_token)
+                        result += trailing_format
                         if not plamo_format_is_preserved(part, result):
                             print("警告: 装飾コードを復元できないため原文維持")
                             break
