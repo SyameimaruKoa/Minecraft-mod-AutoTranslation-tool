@@ -76,12 +76,9 @@ def restore_simple_syntax(source, draft):
 
     suffix_prefix = ""
     if suffix_start < len(source):
-        delimiter = re.search(r"([ \t]*[:：][ \t]*|[ \t]+)$", middle)
-        if delimiter:
+        delimiter = re.search(r"[ \t]+$", middle)
+        if delimiter and not plain_draft.endswith((" ", "\t")):
             suffix_prefix = delimiter.group()
-            if ":" in suffix_prefix or "：" in suffix_prefix:
-                if plain_draft.endswith((":", "：")):
-                    suffix_prefix = suffix_prefix.lstrip(":：")
     repaired = source[:prefix_end] + plain_draft + suffix_prefix + source[suffix_start:]
     if syntax_text_unchanged(draft, repaired) and _format_matches(source, repaired):
         return repaired
