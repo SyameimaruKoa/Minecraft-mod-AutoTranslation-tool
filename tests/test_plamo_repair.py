@@ -233,6 +233,17 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertEqual(repair.call_count, 1)
 
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="ok")
+    @patch("mod_translator.repair_plamo_translation", return_value="翡翠 %s")
+    @patch("mod_translator.requests.post", return_value=complete("石 %s %s"))
+    def test_translation_pipeline_rejects_secondary_japanese_rewrite(self, post, repair, loaded):
+        result = translate_with_plamo(
+            {"a": "Stone %s"}, model_name="plamo-3-translate-0.8b",
+            repair_model="lfm2.5"
+        )
+        self.assertEqual(result, {})
+        repair.assert_called_once()
+
     @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
     def test_repair_cache_tracks_selected_model(self, loaded):
         import tempfile
