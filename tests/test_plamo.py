@@ -270,7 +270,7 @@ class PlamoTranslationTests(unittest.TestCase):
         )
 
     @patch("mod_translator.requests.post")
-    def test_multiline_translation_preserves_seven_newlines_in_one_request(self, post):
+    def test_multiline_glossary_preserves_seven_newlines_in_one_request(self, post):
         original = "First\n\nSecond\nThird\nFourth\n\nFifth\nSixth"
         translated = (
             "最初<mc_line_0><mc_line_1>次<mc_line_2>第三<mc_line_3>"
@@ -287,16 +287,30 @@ class PlamoTranslationTests(unittest.TestCase):
         prompt = post.call_args.kwargs["json"]["prompt"]
         self.assertIn("First<mc_line_0><mc_line_1>Second", prompt)
         self.assertIn("Fifth<mc_line_6>Sixth", prompt)
+        self.assertIn(
+            "<|plamo:index|><mc_line_0><|plamo:item|><mc_line_0>", prompt
+        )
+        self.assertIn(
+            "<|plamo:index|><mc_line_6><|plamo:item|><mc_line_6>", prompt
+        )
 
     @patch("mod_translator.requests.post")
-    def test_dropped_linebreaks_do_not_trigger_three_identical_requests(self, post):
+    def test_dropped_linebreaks_use_segment_fallback(self, post):
         source = "First\n\nSecond\nThird\nFourth\n\nFifth\nSixth"
-        post.return_value = response_with("最初\n次\n第三\n第四\n第五\n第六")
+        post.side_effect = [
+            response_with("最初\n次\n第三\n第四\n第五\n第六"),
+            response_with("最初"), response_with("次"), response_with("第三"),
+            response_with("第四"), response_with("第五"), response_with("第六")
+        ]
         result = translate_with_plamo(
             {"description": source}, model_name="plamo-3-translate-2b"
         )
-        self.assertEqual(result, {})
-        post.assert_called_once()
+        self.assertEqual(result["description"], (
+            "最初\n\n次\n第三\n第四\n\n第五\n第六"
+        ))
+        self.assertEqual(post.call_count, 7)
+        for call in post.call_args_list[1:]:
+            self.assertNotIn("<mc_line_", call.kwargs["json"]["prompt"])
 
     @patch("mod_translator.requests.post")
     def test_mixed_newline_variants_and_colors_are_restored(self, post):
@@ -309,16 +323,23 @@ class PlamoTranslationTests(unittest.TestCase):
         )
         self.assertEqual(result["description"], "§eこんにちは\r\n世界\\n終わり")
         post.assert_called_once()
+        prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertIn(
+            "<|plamo:index|><mc_style_0><|plamo:item|><mc_style_0>", prompt
+        )
 
     @patch("mod_translator.requests.post")
-    def test_reordered_linebreak_markers_are_rejected(self, post):
+    def test_reordered_linebreak_markers_fall_back(self, post):
         source = "First\nSecond\nThird"
-        post.return_value = response_with("最初<mc_line_1>次<mc_line_0>第三")
+        post.side_effect = [
+            response_with("最初<mc_line_1>次<mc_line_0>第三"),
+            response_with("最初"), response_with("次"), response_with("第三")
+        ]
         result = translate_with_plamo(
             {"description": source}, model_name="plamo-3-translate-2b"
         )
-        self.assertEqual(result, {})
-        post.assert_called_once()
+        self.assertEqual(result["description"], "最初\n次\n第三")
+        self.assertEqual(post.call_count, 4)
 
     @patch("mod_translator.requests.post")
     def test_missing_style_markers_fail_without_repeated_gpu_requests(self, post):
