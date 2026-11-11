@@ -520,6 +520,37 @@ class PlamoTranslationTests(unittest.TestCase):
         post.assert_called_once()
 
     @patch("mod_translator.requests.post")
+    def test_trailing_ui_label_placeholder_is_restored_without_model_tag(self, post):
+        post.return_value = response_with("金床コスト")
+        result = translate_with_plamo(
+            {"label": "Anvil Cost: %s"}, model_name="plamo-3-translate-0.8b"
+        )
+        self.assertEqual(result, {"label": "金床コスト: %s"})
+        post.assert_called_once()
+        prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertIn("<|plamo:msg|>Anvil Cost<|plamo:tag|>output", prompt)
+        self.assertNotIn("<mc_fmt_", prompt)
+        self.assertNotIn("%s", prompt)
+
+    @patch("mod_translator.requests.post")
+    def test_trailing_ui_label_numbered_placeholder_is_restored(self, post):
+        post.return_value = response_with("修理費")
+        result = translate_with_plamo(
+            {"label": "Repair Cost: %1$s"}, model_name="plamo-3-translate-0.8b"
+        )
+        self.assertEqual(result, {"label": "修理費: %1$s"})
+        post.assert_called_once()
+
+    @patch("mod_translator.requests.post")
+    def test_trailing_ui_label_extra_generated_printf_is_rejected_once(self, post):
+        post.return_value = response_with("金床コスト %s %s")
+        result = translate_with_plamo(
+            {"label": "Anvil Cost: %s"}, model_name="plamo-3-translate-0.8b"
+        )
+        self.assertEqual(result, {})
+        post.assert_called_once()
+
+    @patch("mod_translator.requests.post")
     def test_broken_masked_printf_tokens_are_rejected_once(self, post):
         post.return_value = response_with("石 %s")
         result = translate_with_plamo({"a": "Stone %s"}, model_name="plamo-3-translate-2b")
