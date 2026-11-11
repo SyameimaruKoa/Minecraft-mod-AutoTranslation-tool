@@ -704,7 +704,7 @@ def build_plamo_prompt(source, form="plain", context=None, glossary=None, histor
 def mask_minecraft_style_codes(source):
     markers = []
     prefix = "mc_style"
-    while re.search(r"<" + prefix + r"_\\d+>", source):
+    while re.search(r"<" + prefix + r"_\d+>", source):
         prefix += "x"
 
     def mask(match):
