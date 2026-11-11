@@ -715,20 +715,6 @@ def mask_minecraft_style_codes(source):
     return PLAMO_STYLE_PATTERN.sub(mask, source), markers
 
 
-def mask_plamo_linebreaks(source):
-    markers = []
-    prefix = "mc_line"
-    while re.search(r"<" + prefix + r"_\d+>", source):
-        prefix += "x"
-
-    def mask(match):
-        token = f"<{prefix}_{len(markers)}>"
-        markers.append((token, match.group()))
-        return token
-
-    return re.sub(r"\r\n|\r|\n|\\n", mask, source), markers
-
-
 def plamo_format_is_preserved(source, translated):
     """番号付き引数の順序変更は許し、番号なし引数の順序を厳密に保つ。"""
     expected = PLAMO_FORMAT_PATTERN.findall(source)
@@ -835,75 +821,86 @@ def translate_with_plamo(
         entry_context = context_fn(key) if context_fn else context
         if entry_context and "<|plamo:" in entry_context:
             raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
-        masked_source, style_markers = mask_minecraft_style_codes(source)
-        masked_source, linebreak_markers = mask_plamo_linebreaks(masked_source)
-        prefix = masked_source[:len(masked_source) - len(masked_source.lstrip())]
-        suffix = masked_source[len(masked_source.rstrip()):]
-        prompt = build_plamo_prompt(
-            masked_source.strip(), form,
-            context=entry_context,
-            glossary=relevant_plamo_glossary(masked_source, glossary),
-            history=stable_history if history_size > 0 else []
-        )
-        max_tokens = max(512, min(4096, len(masked_source) // 2 + 128))
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "stop": PLAMO_STOP_TOKENS,
-            "stream": False,
-        }
+        parts = re.split(r"(\r\n|\r|\n|\\n)", source)
+        translated_parts = []
         translated_value = None
 
-        for attempt in range(1, 4):
-            try:
-                read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
-                response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
-                if response.status_code >= 400:
-                    raise RuntimeError(
-                        f"LM Studio / PLaMo API HTTP {response.status_code}: "
-                        + response.text[:1000]
-                    )
-                choice = response.json()["choices"][0]
-                if choice.get("finish_reason") == "length":
-                    if payload["max_tokens"] < 4096:
-                        payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
-                    raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
-                translated = choice["text"].strip()
-                result = prefix + translated + suffix
-                if not is_valid_translation(masked_source, result):
-                    raise ValueError("空の翻訳結果、またはエラー文字列")
-                if not plamo_format_is_preserved(masked_source, result):
-                    if style_markers or linebreak_markers:
-                        print("警告: 装飾・改行プレースホルダーが一致せず原文維持（同一条件での再試行は省略）")
+        for part in parts:
+            if part in ("\r\n", "\r", "\n", "\\n") or not PLAMO_STYLE_PATTERN.sub("", part).strip():
+                translated_parts.append(part)
+                continue
+
+            masked_source, style_markers = mask_minecraft_style_codes(part)
+            prefix = masked_source[:len(masked_source) - len(masked_source.lstrip())]
+            suffix = masked_source[len(masked_source.rstrip()):]
+            prompt = build_plamo_prompt(
+                masked_source.strip(), form,
+                context=entry_context,
+                glossary=relevant_plamo_glossary(masked_source, glossary),
+                history=stable_history if history_size > 0 else []
+            )
+            max_tokens = max(512, min(4096, len(masked_source) // 2 + 128))
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+                "stop": PLAMO_STOP_TOKENS,
+                "stream": False,
+            }
+            part_result = None
+
+            for attempt in range(1, 4):
+                try:
+                    read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
+                    response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
+                    if response.status_code >= 400:
+                        raise RuntimeError(
+                            f"LM Studio / PLaMo API HTTP {response.status_code}: "
+                            + response.text[:1000]
+                        )
+                    choice = response.json()["choices"][0]
+                    if choice.get("finish_reason") == "length":
+                        if payload["max_tokens"] < 4096:
+                            payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
+                        raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
+                    translated = choice["text"].strip()
+                    result = prefix + translated + suffix
+                    if not is_valid_translation(masked_source, result):
+                        raise ValueError("空の翻訳結果、またはエラー文字列")
+                    if not plamo_format_is_preserved(masked_source, result):
+                        if style_markers:
+                            print("警告: 装飾コードのプレースホルダーが一致せず原文維持")
+                            break
+                        raise ValueError(
+                            "書式指定子・変数・改行が原文と一致しない: "
+                            f"原文={PLAMO_FORMAT_PATTERN.findall(masked_source)!r}, "
+                            f"訳文={PLAMO_FORMAT_PATTERN.findall(result)!r}, "
+                            f"改行={masked_source.count(chr(10))}/{result.count(chr(10))}, "
+                            f"\\n={masked_source.count(chr(92) + 'n')}/{result.count(chr(92) + 'n')}"
+                        )
+                    for marker, original_style in style_markers:
+                        result = result.replace(marker, original_style)
+                    if not plamo_format_is_preserved(part, result):
+                        print("警告: 装飾コードを復元できないため原文維持")
                         break
-                    raise ValueError(
-                        "色コード・フォーマット指定子・変数・改行が原文と一致しない: "
-                        f"原文={PLAMO_FORMAT_PATTERN.findall(masked_source)!r}, "
-                        f"訳文={PLAMO_FORMAT_PATTERN.findall(result)!r}, "
-                        f"改行={masked_source.count(chr(10))}/{result.count(chr(10))}, "
-                        f"\\\\n={masked_source.count(chr(92) + 'n')}/{result.count(chr(92) + 'n')}"
-                    )
-                newline_positions = [
-                    result.find(marker) for marker, _ in linebreak_markers
-                ]
-                if newline_positions != sorted(newline_positions):
-                    print("警告: 改行の順序が変更されたため原文維持")
+                    part_result = result
                     break
-                for marker, original_value in style_markers + linebreak_markers:
-                    result = result.replace(marker, original_value)
-                if not plamo_format_is_preserved(source, result):
-                    print("警告: 装飾コード・改行を復元できないため訳文を不採用")
-                    break
-                translated_value = result
+                except requests.exceptions.ConnectionError as e:
+                    raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
+                except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
+                    print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
+                    if attempt < 3:
+                        time.sleep(1)
+
+            if part_result is None:
                 break
-            except requests.exceptions.ConnectionError as e:
-                raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
-            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
-                print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
-                if attempt < 3:
-                    time.sleep(1)
+            translated_parts.append(part_result)
+
+        if len(translated_parts) == len(parts):
+            candidate = "".join(translated_parts)
+            if plamo_format_is_preserved(source, candidate):
+                translated_value = candidate
 
         if translated_value is None:
             print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
