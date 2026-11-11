@@ -795,57 +795,75 @@ def translate_with_plamo(
                     on_translation(key, source, source)
             continue
 
-        prefix = source[:len(source) - len(source.lstrip())]
-        suffix = source[len(source.rstrip()):]
         key = source_keys[0]
         entry_context = context_fn(key) if context_fn else context
         if entry_context and "<|plamo:" in entry_context:
             raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
-        prompt = build_plamo_prompt(
-            source.strip(), form,
-            context=entry_context,
-            glossary=relevant_plamo_glossary(source, glossary),
-            history=stable_history if history_size > 0 else []
-        )
-        max_tokens = max(512, min(4096, len(source) // 2 + 128))
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "stop": PLAMO_STOP_TOKENS,
-            "stream": False,
-        }
+        parts = re.split(r"(§[0-9a-fk-orA-FK-OR])", source)
+        translated_parts = []
         translated_value = None
 
-        for attempt in range(1, 4):
-            try:
-                read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
-                response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
-                if response.status_code >= 400:
-                    raise RuntimeError(
-                        f"LM Studio / PLaMo API HTTP {response.status_code}: "
-                        + response.text[:1000]
-                    )
-                choice = response.json()["choices"][0]
-                if choice.get("finish_reason") == "length":
-                    if payload["max_tokens"] < 4096:
-                        payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
-                    raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
-                translated = choice["text"].strip()
-                result = prefix + translated + suffix
-                if not is_valid_translation(source, result):
-                    raise ValueError("空の翻訳結果、またはエラー文字列")
-                if not plamo_format_is_preserved(source, result):
-                    raise ValueError("色コード・フォーマット指定子・変数・改行が原文と一致しない")
-                translated_value = result
+        for part in parts:
+            if re.fullmatch(r"§[0-9a-fk-orA-FK-OR]", part) or not part.strip():
+                translated_parts.append(part)
+                continue
+
+            prefix = part[:len(part) - len(part.lstrip())]
+            suffix = part[len(part.rstrip()):]
+            prompt = build_plamo_prompt(
+                part.strip(), form,
+                context=entry_context,
+                glossary=relevant_plamo_glossary(part, glossary),
+                history=stable_history if history_size > 0 else []
+            )
+            max_tokens = max(512, min(4096, len(part) // 2 + 128))
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+                "stop": PLAMO_STOP_TOKENS,
+                "stream": False,
+            }
+            part_result = None
+
+            for attempt in range(1, 4):
+                try:
+                    read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
+                    response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
+                    if response.status_code >= 400:
+                        raise RuntimeError(
+                            f"LM Studio / PLaMo API HTTP {response.status_code}: "
+                            + response.text[:1000]
+                        )
+                    choice = response.json()["choices"][0]
+                    if choice.get("finish_reason") == "length":
+                        if payload["max_tokens"] < 4096:
+                            payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
+                        raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
+                    translated = choice["text"].strip()
+                    result = prefix + translated + suffix
+                    if not is_valid_translation(part, result):
+                        raise ValueError("空の翻訳結果、またはエラー文字列")
+                    if not plamo_format_is_preserved(part, result):
+                        raise ValueError("色コード・フォーマット指定子・変数・改行が原文と一致しない")
+                    part_result = result
+                    break
+                except requests.exceptions.ConnectionError as e:
+                    raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
+                except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
+                    print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
+                    if attempt < 3:
+                        time.sleep(1)
+
+            if part_result is None:
                 break
-            except requests.exceptions.ConnectionError as e:
-                raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
-            except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
-                print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
-                if attempt < 3:
-                    time.sleep(1)
+            translated_parts.append(part_result)
+
+        if len(translated_parts) == len(parts):
+            candidate = "".join(translated_parts)
+            if plamo_format_is_preserved(source, candidate):
+                translated_value = candidate
 
         if translated_value is None:
             print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
