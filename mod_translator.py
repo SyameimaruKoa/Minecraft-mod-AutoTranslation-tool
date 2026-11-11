@@ -7,7 +7,9 @@ import hashlib
 import zipfile
 import requests
 import traceback
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation
 from deep_translator import GoogleTranslator
 
 # --- 定数設定 ---
@@ -701,6 +703,12 @@ def build_plamo_prompt(source, form="plain", context=None, glossary=None, histor
     )
 
 
+def _lm_studio_endpoint_base(url):
+    if "/v1/" not in url:
+        raise ValueError("LM StudioのAPI URLには /v1/ が必要です")
+    return url.split("/v1/", 1)[0].rstrip("/")
+
+
 def mask_minecraft_style_codes(source):
     markers = []
     prefix = "mc_style"
@@ -778,7 +786,7 @@ def mask_plamo_linebreaks(source):
 
 
 def translate_plamo_multiline_glossary(
-    source, model, api_url, form, context, glossary, history
+    source, model, api_url, form, context, glossary, history, load_policy=None
 ):
     masked, style_markers = mask_minecraft_style_codes(source)
     masked, format_markers = mask_plamo_format_tokens(
@@ -796,6 +804,8 @@ def translate_plamo_multiline_glossary(
     max_tokens = max(512, min(4096, len(masked) // 2 + 128))
     timeout = max(120, min(900, max_tokens * 0.5))
     try:
+        if load_policy:
+            require_loaded_lm_studio_model(model, api_url, load_policy)
         response = requests.post(
             api_url,
             json={
@@ -889,7 +899,8 @@ def resolve_plamo_model(api_url):
 def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
-    history_refresh=16
+    history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
+    model_load_policy="error", on_repair_translation=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -906,6 +917,15 @@ def translate_with_plamo(
     if history_refresh < 1:
         raise ValueError("history_refresh は1以上で指定してください")
     glossary = glossary or []
+    if repair_model:
+        if model == repair_model and _lm_studio_endpoint_base(api_url) == _lm_studio_endpoint_base(repair_api_url):
+            raise ValueError("翻訳モデルと修復モデルは別のロード済みモデルを指定してください")
+        require_loaded_lm_studio_model(model, api_url, model_load_policy)
+        require_loaded_lm_studio_model(repair_model, repair_api_url, model_load_policy)
+
+    repair_executor = ThreadPoolExecutor(max_workers=1) if repair_model else None
+    repair_stop = threading.Event()
+    pending_repairs = []
 
     for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
         if not source.strip():
@@ -934,10 +954,12 @@ def translate_with_plamo(
         if entry_context and "<|plamo:" in entry_context:
             raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
         translated_value = None
+        rejected_for_repair = None
         if re.search(r"\r\n|\r|\n|\\n", source):
             translated_value = translate_plamo_multiline_glossary(
                 source, model, api_url, form, entry_context, glossary,
-                stable_history if history_size > 0 else []
+                stable_history if history_size > 0 else [],
+                model_load_policy if repair_model else None
             )
             if translated_value is None:
                 print("情報: 改行を含む全文の保護に失敗したため、改行単位で翻訳します")
@@ -981,6 +1003,8 @@ def translate_with_plamo(
                 for attempt in range(1, 4):
                     try:
                         read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
+                        if repair_model:
+                            require_loaded_lm_studio_model(model, api_url, model_load_policy)
                         response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
                         if response.status_code >= 400:
                             raise RuntimeError(
@@ -994,6 +1018,7 @@ def translate_with_plamo(
                             raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
                         translated = choice["text"].strip()
                         result = prefix + translated + suffix
+                        rejected_for_repair = result
                         if not is_valid_translation(masked_source, result):
                             raise ValueError("空の翻訳結果、またはエラー文字列")
                         if not plamo_format_is_preserved(masked_source, result):
@@ -1035,7 +1060,17 @@ def translate_with_plamo(
                     translated_value = candidate
 
         if translated_value is None:
-            print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
+            if repair_executor:
+                pending_repairs.append((
+                    source, source_keys,
+                    repair_executor.submit(
+                        repair_plamo_translation, source, rejected_for_repair,
+                        repair_model, repair_api_url, model_load_policy, repair_stop
+                    )
+                ))
+                print(f"情報: 修復キューへ送信: {source[:65]}")
+            else:
+                print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
         else:
             for current_key in source_keys:
                 translated_results[current_key] = translated_value
@@ -1055,6 +1090,27 @@ def translate_with_plamo(
         elapsed = time.time() - start_time
         eta = format_time(elapsed / processed * (total - processed))
         print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
+
+    try:
+        for source, keys, future in pending_repairs:
+            repaired = future.result()
+            if (
+                isinstance(repaired, str) and repaired != source
+                and is_valid_translation(source, repaired)
+                and plamo_format_is_preserved(source, repaired)
+            ):
+                for key in keys:
+                    translated_results[key] = repaired
+                    callback = on_repair_translation or on_translation
+                    if callback:
+                        callback(key, source, repaired)
+                print(f"情報: 修復モデル[{repair_model}]で構文を保持して修復しました: {source[:55]}")
+            else:
+                print(f"警告: 修復モデルの結果を採用できず原文維持: {source[:70]}")
+    finally:
+        repair_stop.set()
+        if repair_executor:
+            repair_executor.shutdown(wait=True, cancel_futures=True)
 
     return translated_results
 
