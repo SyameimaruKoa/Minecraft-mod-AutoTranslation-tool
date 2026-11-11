@@ -9,7 +9,7 @@ import requests
 import traceback
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation
+from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged
 from deep_translator import GoogleTranslator
 
 # --- 定数設定 ---
@@ -943,6 +943,7 @@ def translate_with_plamo(
             accepted = (
                 isinstance(repaired, str) and repaired != original
                 and is_valid_translation(original, repaired)
+                and syntax_text_unchanged(draft, repaired)
                 and plamo_format_is_preserved(original, repaired)
             )
             if accepted:
