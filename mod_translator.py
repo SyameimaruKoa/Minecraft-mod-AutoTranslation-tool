@@ -715,6 +715,24 @@ def mask_minecraft_style_codes(source):
     return PLAMO_STYLE_PATTERN.sub(mask, source), markers
 
 
+def mask_plamo_format_tokens(source, ignored=()):
+    markers = []
+    prefix = "mc_fmt"
+    ignored = set(ignored)
+    while re.search(r"<" + prefix + r"_\d+>", source):
+        prefix += "x"
+
+    def mask(match):
+        original = match.group()
+        if original.startswith("§") or original in ignored:
+            return original
+        marker = f"<{prefix}_{len(markers)}>"
+        markers.append((marker, original))
+        return marker
+
+    return PLAMO_FORMAT_PATTERN.sub(mask, source), markers
+
+
 def plamo_format_is_preserved(source, translated):
     """番号付き引数の順序変更は許し、番号なし引数の順序を厳密に保つ。"""
     expected = PLAMO_FORMAT_PATTERN.findall(source)
@@ -749,9 +767,12 @@ def translate_plamo_multiline_glossary(
     source, model, api_url, form, context, glossary, history
 ):
     masked, style_markers = mask_minecraft_style_codes(source)
+    masked, format_markers = mask_plamo_format_tokens(
+        masked, (marker for marker, _ in style_markers)
+    )
     masked, line_markers = mask_plamo_linebreaks(masked)
-    protected = style_markers + line_markers
-    terms = relevant_plamo_glossary(masked, glossary)
+    protected = style_markers + format_markers + line_markers
+    terms = relevant_plamo_glossary(source, glossary)
     terms += [{"source": marker, "target": marker} for marker, _ in protected]
     prefix = masked[:len(masked) - len(masked.lstrip())]
     suffix = masked[len(masked.rstrip()):]
@@ -887,6 +908,13 @@ def translate_with_plamo(
                     on_translation(key, source, source)
             continue
 
+        if not PLAMO_FORMAT_PATTERN.sub("", source).strip():
+            for key in source_keys:
+                translated_results[key] = source
+                if on_translation:
+                    on_translation(key, source, source)
+            continue
+
         key = source_keys[0]
         entry_context = context_fn(key) if context_fn else context
         if entry_context and "<|plamo:" in entry_context:
@@ -909,12 +937,19 @@ def translate_with_plamo(
                     continue
 
                 masked_source, style_markers = mask_minecraft_style_codes(part)
+                masked_source, format_markers = mask_plamo_format_tokens(
+                    masked_source, (marker for marker, _ in style_markers)
+                )
+                protected = style_markers + format_markers
                 prefix = masked_source[:len(masked_source) - len(masked_source.lstrip())]
                 suffix = masked_source[len(masked_source.rstrip()):]
                 prompt = build_plamo_prompt(
                     masked_source.strip(), form,
                     context=entry_context,
-                    glossary=relevant_plamo_glossary(masked_source, glossary),
+                    glossary=(
+                        relevant_plamo_glossary(part, glossary)
+                        + [{"source": marker, "target": marker} for marker, _ in protected]
+                    ),
                     history=stable_history if history_size > 0 else []
                 )
                 max_tokens = max(512, min(4096, len(masked_source) // 2 + 128))
@@ -947,8 +982,8 @@ def translate_with_plamo(
                         if not is_valid_translation(masked_source, result):
                             raise ValueError("空の翻訳結果、またはエラー文字列")
                         if not plamo_format_is_preserved(masked_source, result):
-                            if style_markers:
-                                print("警告: 装飾コードのプレースホルダーが一致せず原文維持")
+                            if protected or "0.8b" in model.lower():
+                                print("警告: 書式保護に失敗。無効な同一条件の再試行は省略")
                                 break
                             raise ValueError(
                                 "書式指定子・変数・改行が原文と一致しない: "
@@ -957,8 +992,11 @@ def translate_with_plamo(
                                 f"改行={masked_source.count(chr(10))}/{result.count(chr(10))}, "
                                 f"\\n={masked_source.count(chr(92) + 'n')}/{result.count(chr(92) + 'n')}"
                             )
-                        for marker, original_style in style_markers:
-                            result = result.replace(marker, original_style)
+                        if any(result.count(marker) != 1 for marker, _ in protected):
+                            print("警告: プレースホルダーの欠落または重複により原文維持")
+                            break
+                        for marker, original_token in protected:
+                            result = result.replace(marker, original_token)
                         if not plamo_format_is_preserved(part, result):
                             print("警告: 装飾コードを復元できないため原文維持")
                             break
