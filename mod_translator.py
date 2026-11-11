@@ -1195,6 +1195,9 @@ class ModTranslator:
         self.plamo_history = args.plamo_history
         self.plamo_history_refresh = getattr(args, "plamo_history_refresh", 16)
         self.plamo_key_context = getattr(args, "plamo_key_context", False)
+        self.repair_model = getattr(args, "repair_model", None) if self.engine == "plamo" else None
+        self.repair_api_url = getattr(args, "repair_api_url", LMSTUDIO_API_URL)
+        self.model_load_policy = getattr(args, "model_load_policy", "error")
         self.plamo_glossary = []
         self.plamo_context = ""
         self.gemma_only = args.gemma_only
@@ -1230,6 +1233,19 @@ class ModTranslator:
 
         if self.engine == "plamo":
             self.model_name = self.model_name or resolve_plamo_model(self.plamo_api_url)
+            if self.repair_model:
+                if (
+                    self.model_name == self.repair_model
+                    and _lm_studio_endpoint_base(self.plamo_api_url)
+                    == _lm_studio_endpoint_base(self.repair_api_url)
+                ):
+                    raise ValueError("翻訳モデルと修復モデルには異なるモデルを指定してください")
+                require_loaded_lm_studio_model(
+                    self.model_name, self.plamo_api_url, self.model_load_policy
+                )
+                require_loaded_lm_studio_model(
+                    self.repair_model, self.repair_api_url, self.model_load_policy
+                )
             self.plamo_glossary = load_plamo_glossary(args.plamo_glossary)
             context_parts = [args.plamo_context] if args.plamo_context else []
             if args.plamo_context_file:
@@ -1270,10 +1286,21 @@ class ModTranslator:
             ensure_ascii=False, separators=(",", ":")
         )
 
+    def plamo_repair_cache_key(self, filename, lang_path, key, source):
+        return json.dumps(
+            ["repair", self.plamo_settings_id, self.repair_model, self.repair_api_url,
+             filename, lang_path, key, source],
+            ensure_ascii=False, separators=(",", ":")
+        )
+
     def get_plamo_translation(self, filename, lang_path, key, source):
         cache_key = self.plamo_cache_key(filename, lang_path, key, source)
         if cache_key in self.plamo_cache:
             return self.plamo_cache[cache_key]
+        if self.repair_model:
+            repair_key = self.plamo_repair_cache_key(filename, lang_path, key, source)
+            if repair_key in self.plamo_cache:
+                return self.plamo_cache[repair_key]
         if PLAMO_STYLE_PATTERN.search(source):
             return None
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
@@ -1286,6 +1313,11 @@ class ModTranslator:
 
     def save_plamo_translation(self, filename, lang_path, key, source, translated):
         cache_key = self.plamo_cache_key(filename, lang_path, key, source)
+        self.plamo_cache[cache_key] = translated
+        save_json(self.plamo_cache_file, self.plamo_cache)
+
+    def save_plamo_repair_translation(self, filename, lang_path, key, source, translated):
+        cache_key = self.plamo_repair_cache_key(filename, lang_path, key, source)
         self.plamo_cache[cache_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
 
@@ -1334,6 +1366,12 @@ class ModTranslator:
                             history_size=self.plamo_history,
                             history_refresh=self.plamo_history_refresh,
                             on_translation=lambda key, src, dst: self.save_plamo_translation(
+                                filename, lang_path, key, src, dst
+                            ),
+                            repair_model=self.repair_model,
+                            repair_api_url=self.repair_api_url,
+                            model_load_policy=self.model_load_policy,
+                            on_repair_translation=lambda key, src, dst: self.save_plamo_repair_translation(
                                 filename, lang_path, key, src, dst
                             )
                         )
@@ -1483,6 +1521,9 @@ if __name__ == "__main__":
     parser.add_argument("--plamo-history", type=int, default=3, help="参考にする対訳の最大件数（0で無効、既定3件）")
     parser.add_argument("--plamo-history-refresh", type=int, default=16, help="対訳履歴を更新する翻訳件数（1で従来の毎回更新、既定16件）")
     parser.add_argument("--plamo-key-context", action="store_true", help="各翻訳キーを参考文脈に含める（プロンプトキャッシュ再利用率は低下）")
+    parser.add_argument("--repair-model", help="PLaMo専用: 別途手動ロードして使用する構文修復モデルID（例: LFM2.5-1.2B-Instruct）")
+    parser.add_argument("--repair-api-url", default=LMSTUDIO_API_URL, help="PLaMo専用: 修復モデル用Chat Completions API URL")
+    parser.add_argument("--model-load-policy", choices=["error", "wait"], default="error", help="PLaMo専用: 修復モデル利用時の未ロード動作（errorで終了、waitで手動ロードを待機）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
@@ -1491,6 +1532,8 @@ if __name__ == "__main__":
         parser.error("--plamo-history は0〜10を指定してください")
     if args.plamo_history_refresh < 1:
         parser.error("--plamo-history-refresh は1以上を指定してください")
+    if args.engine != "plamo" and args.repair_model:
+        parser.error("--repair-model は --engine plamo 専用です")
 
     translator = ModTranslator(args)
     translator.run()
