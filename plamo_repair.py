@@ -1,6 +1,92 @@
 import json
 import time
 import requests
+import re
+
+
+FORMAT_PATTERN = re.compile(
+    r"§[0-9a-fk-orA-FK-OR]|(?<!\d)%(?:\d+\$)?(?:[-+#0,(]*\d*(?:\.\d+)?[a-zA-Z%]| \d*(?:\.\d+)?[dfeEgGaA](?![A-Za-z]))|\{[\w.:-]+\}|<[A-Za-z_][\w.:-]*>"
+)
+SYNTAX_PATTERN = re.compile(FORMAT_PATTERN.pattern + r"|\r\n|\r|\n|\\n")
+
+
+def syntax_free_text(value):
+    return SYNTAX_PATTERN.sub("", value).strip()
+
+
+def syntax_text_unchanged(draft, repaired):
+    return (
+        isinstance(draft, str) and isinstance(repaired, str)
+        and syntax_free_text(draft) == syntax_free_text(repaired)
+    )
+
+
+def _format_matches(source, repaired):
+    expected = FORMAT_PATTERN.findall(source)
+    actual = FORMAT_PATTERN.findall(repaired)
+
+    def numbered(tokens):
+        return sorted(token for token in tokens if re.match(r"%\d+\$", token))
+
+    def unnumbered(tokens):
+        return [token for token in tokens if token.startswith("%") and not re.match(r"%\d+\$", token)]
+
+    def others(tokens):
+        return sorted(token for token in tokens if not token.startswith("%"))
+
+    return (
+        numbered(expected) == numbered(actual)
+        and unnumbered(expected) == unnumbered(actual)
+        and others(expected) == others(actual)
+        and re.findall(r"§[0-9a-fk-orA-FK-OR]", source)
+        == re.findall(r"§[0-9a-fk-orA-FK-OR]", repaired)
+        and re.findall(r"\r\n|\r|\n|\\n", source)
+        == re.findall(r"\r\n|\r|\n|\\n", repaired)
+    )
+
+
+def restore_simple_syntax(source, draft):
+    if not draft or not draft.strip():
+        return None
+
+    tokens = list(SYNTAX_PATTERN.finditer(source))
+    plain_draft = SYNTAX_PATTERN.sub("", draft).strip()
+    if not plain_draft:
+        return None
+
+    if not tokens:
+        return plain_draft if syntax_text_unchanged(draft, plain_draft) else None
+
+    prefix_end = 0
+    suffix_start = len(source)
+    for match in tokens:
+        if match.start() == prefix_end:
+            prefix_end = match.end()
+        else:
+            break
+    for match in reversed(tokens):
+        if match.end() == suffix_start:
+            suffix_start = match.start()
+        else:
+            break
+
+    middle = source[prefix_end:suffix_start]
+    if SYNTAX_PATTERN.search(middle):
+        return None
+
+    suffix_prefix = ""
+    if suffix_start < len(source):
+        delimiter = re.search(r"([ \t]*[:：][ \t]*|[ \t]+)$", middle)
+        if delimiter:
+            suffix_prefix = delimiter.group()
+            if ":" in suffix_prefix or "：" in suffix_prefix:
+                if plain_draft.endswith((":", "：")):
+                    suffix_prefix = suffix_prefix.lstrip(":：")
+    repaired = source[:prefix_end] + plain_draft + suffix_prefix + source[suffix_start:]
+    if syntax_text_unchanged(draft, repaired) and _format_matches(source, repaired):
+        return repaired
+    return None
+
 
 
 def _lm_studio_base_url(api_url):
@@ -67,26 +153,42 @@ def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=
         time.sleep(poll_seconds)
 
 
-def repair_plamo_translation(source, rejected, model, api_url, load_policy="error", cancel_event=None):
+def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait", cancel_event=None):
+    if not isinstance(rejected, str) or not syntax_free_text(rejected):
+        print("警告: PLaMoの日本語訳がないため、構文だけでは修復できません")
+        return None
+
+    deterministic = restore_simple_syntax(source, rejected)
+    if deterministic is not None:
+        return deterministic
+
     active_model = require_loaded_lm_studio_model(model, api_url, load_policy, cancel_event=cancel_event)
+    required_syntax = SYNTAX_PATTERN.findall(source)
     payload = {
         "model": active_model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are repairing an English-to-Japanese localization for a Minecraft mod. "
-                    "Use the English source as the authority and the rejected Japanese result only "
-                    "as an optional draft. Return a natural Japanese translation, not explanations. "
-                    "Preserve every format argument (%s, %d, %1$s, etc.), variable (<name>, {name}), "
-                    "Minecraft § color code, and newline exactly as in the English source. "
-                    "Never add or remove format arguments. Return JSON matching the response schema."
+                    "You are a syntax-only editor, NOT a translator. "
+                    "The Japanese draft is immutable user content. "
+                    "Your only task is to place, remove, or reorder the exact formatting "
+                    "tokens found in the English source (printf, {0}, Minecraft section-sign codes, "
+                    "and newline escapes). Never translate, paraphrase, correct spelling, "
+                    "add new Japanese words, or change any existing Japanese characters. "
+                    "Remove invented formatting tokens that are absent from the source. "
+                    "Return one JSON object with the repaired_text property."
                 )
             },
             {
                 "role": "user",
                 "content": json.dumps(
-                    {"english_source": source, "rejected_japanese": rejected or ""},
+                    {
+                        "english_source_for_syntax_only": source,
+                        "japanese_draft_do_not_retranslate": rejected,
+                        "required_syntax_tokens": required_syntax,
+                        "japanese_text_must_remain_exactly": syntax_free_text(rejected)
+                    },
                     ensure_ascii=False
                 )
             }
@@ -94,31 +196,37 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="erro
         "response_format": {
             "type": "json_schema",
             "json_schema": {
-                "name": "minecraft_translation_repair",
+                "name": "minecraft_syntax_repair",
                 "strict": True,
                 "schema": {
                     "type": "object",
-                    "properties": {"translation": {"type": "string"}},
-                    "required": ["translation"],
+                    "properties": {"repaired_text": {"type": "string"}},
+                    "required": ["repaired_text"],
                     "additionalProperties": False
                 }
             }
         },
         "temperature": 0,
-        "max_tokens": max(256, min(4096, len(source) * 2)),
+        "max_tokens": max(256, min(4096, len(rejected) * 2 + 128)),
         "stream": False
     }
     try:
         response = requests.post(api_url, json=payload, timeout=(10, 180))
         if response.status_code >= 400:
             raise RuntimeError(
-                f"修復モデルのAPIエラー HTTP {response.status_code}: {response.text[:400]}"
+                f"構文修復モデルのAPIエラー HTTP {response.status_code}: {response.text[:400]}"
             )
         message = response.json()["choices"][0]["message"]["content"]
-        translated = json.loads(message)["translation"]
-        if not isinstance(translated, str):
-            raise ValueError("修復応答のtranslationが文字列ではありません")
-        return translated
+        repaired = json.loads(message)["repaired_text"]
+        if not isinstance(repaired, str):
+            raise ValueError("構文修復応答が文字列ではありません")
+        if not syntax_text_unchanged(rejected, repaired):
+            print("警告: 補助モデルが日本語本文を変更したため、修復結果を不採用")
+            return None
+        if not _format_matches(source, repaired):
+            print("警告: 補助モデルが構文を復元できませんでした")
+            return None
+        return repaired
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as error:
-        print(f"警告: 修復モデルの応答を採用できません: {error}")
+        print(f"警告: 構文修復モデルの応答を採用できません: {error}")
         return None
