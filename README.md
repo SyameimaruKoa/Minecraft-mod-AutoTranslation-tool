@@ -241,6 +241,27 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 `run.bat`の[4]メニューでも用語集・文脈ファイル・履歴数を指定できる。なお、用語集の内容を変更すると設定別キャッシュを切り替えて翻訳をやり直す設計じゃ。
 
+### PLaMo専用：2モデルによる構文修復
+
+PLaMoの翻訳で書式が破損した場合に限り、別のLM Studioモデルへ修復を依頼できる。修復モデルは固定ではなく、`--repair-model`でロード済みの任意のLLMを指定できる（LFM2.5など）。省略すると従来のPLaMo単独動作となる。汎用の`lmstudio`・`ollama`エンジンには適用しない。
+
+- PLaMoと修復モデルはLM Studioで**両方とも手動ロード**する。CPU/GPUオフロードの設定はLM Studio側で行う。
+- モデルのロード状態は`/api/v1/models`（旧版は`/api/v0/models`）で確認し、本ツールからロードAPIは呼ばない。
+- `--model-load-policy error`（既定）は未ロード時にエラー終了。`--model-load-policy wait`はロードを案内して待機し、手動ロード後に処理を再開する。
+- モデルを切り替える場合は`--repair-model`のIDを変更する。修復結果はモデル別に`plamo_cache.json`へ保存する。
+- 書式検証に失敗した訳文のみ、1つの修復ワーカーで処理する。PLaMoは次の翻訳を続行し、保存前に修復結果と原文の書式をPythonで照合する。修復でも不一致なら原文を保持する。
+- LM Studioの**Just in Time Model Loading**は無効にすると、推論要求による自動ロードを防げる。両モデルを手動ロードしたまま運用する。
+
+PowerShellの起動メニュー[4]からも、修復モデルID・API接続先・未ロード時の動作を指定できる。
+
+例（モデルIDはLM Studioでロードした実際の識別子へ置き換える）：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --model "plamo-3-translate-0.8b" --repair-model "lfm2.5-1.2b-instruct" --model-load-policy wait
+```
+
+修復モデルが別のLM Studioサーバーにある場合は、`--repair-api-url`で`http://127.0.0.1:1234/v1/chat/completions`とは異なる接続先を指定する。
+
 ### 検証コマンド
 
 Pythonのライブラリは必ず仮想環境へインストールする。既存の`venv`があれば流用可能。
