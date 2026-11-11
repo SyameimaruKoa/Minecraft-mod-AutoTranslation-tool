@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 from mod_translator import translate_with_plamo
 from plamo_repair import (
     get_loaded_lm_studio_models, repair_plamo_translation,
-    require_loaded_lm_studio_model, restore_simple_syntax, syntax_text_unchanged
+    require_loaded_lm_studio_model, restore_simple_syntax, syntax_text_unchanged,
+    has_japanese_translation, apply_syntax_offsets
 )
 
 
@@ -100,7 +101,7 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
     def test_repair_only_inserts_syntax_without_translating(self, post, require):
         post.return_value = Mock(status_code=200)
         post.return_value.json.return_value = {
-            "choices": [{"message": {"content": '{"repaired_text":"エンチャント%sレベル"}'}}]
+            "choices": [{"message": {"content": '{"offsets":[6]}'}}]
         }
         answer = repair_plamo_translation(
             "Enchant %s levels", "エンチャントレベル", "lfm2.5",
@@ -113,7 +114,8 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertEqual(payload["temperature"], 0)
         self.assertIn("NOT a translator", payload["messages"][0]["content"])
-        self.assertIn("japanese_draft_do_not_retranslate", payload["messages"][1]["content"])
+        self.assertIn("immutable_japanese", payload["messages"][1]["content"])
+        self.assertNotIn("repaired_text", payload["response_format"]["json_schema"]["schema"]["properties"])
 
     @patch("plamo_repair.require_loaded_lm_studio_model")
     @patch("plamo_repair.requests.post")
@@ -135,6 +137,63 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
             )
         post.assert_not_called()
         require.assert_not_called()
+
+    def test_unusable_punctuation_draft_is_not_a_translation(self):
+        self.assertFalse(has_japanese_translation("%s: %s  %s  %s"))
+        self.assertFalse(has_japanese_translation(":"))
+        self.assertFalse(has_japanese_translation("%s"))
+        self.assertTrue(has_japanese_translation("赤 {0}"))
+        self.assertIsNone(restore_simple_syntax("Config", "%s: %s  %s  %s"))
+
+    def test_offset_reconstruction_rejects_invalid_positions(self):
+        self.assertEqual(
+            apply_syntax_offsets("エンチャントレベル", ["%s"], [6]),
+            "エンチャント%sレベル"
+        )
+        invalid = [[], [-1], [99], [True], [6.0], ["6"]]
+        for offsets in invalid:
+            self.assertIsNone(apply_syntax_offsets("日本語", ["%s"], offsets))
+        self.assertIsNone(apply_syntax_offsets("日本語", ["%s", "%d"], [2, 1]))
+        self.assertEqual(
+            apply_syntax_offsets("日本語", ["§c", "%s", "§r"], [0, 2, 3]),
+            "§c日本%s語§r"
+        )
+
+    @patch("plamo_repair.require_loaded_lm_studio_model")
+    @patch("plamo_repair.requests.post")
+    def test_punctuation_only_output_is_never_sent_to_lfm(self, post, require):
+        result = repair_plamo_translation(
+            "Config", "%s: %s  %s  %s", "lfm2.5",
+            "http://localhost:1234/v1/chat/completions"
+        )
+        self.assertIsNone(result)
+        post.assert_not_called()
+        require.assert_not_called()
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("plamo_repair.requests.post")
+    def test_schema_cannot_make_lfm_rewrite_the_japanese_draft(self, post, require):
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '{"offsets":[6],"repaired_text":"新訳に変更"}'}}]
+        }
+        result = repair_plamo_translation(
+            "Enchant %s levels", "エンチャントレベル", "lfm2.5",
+            "http://localhost:1234/v1/chat/completions"
+        )
+        self.assertEqual(result, "エンチャント%sレベル")
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="ok")
+    @patch("mod_translator.repair_plamo_translation")
+    @patch("mod_translator.requests.post", return_value=complete("%s: %s  %s  %s"))
+    def test_pipeline_drops_nonsensical_draft_before_repair_queue(self, post, repair, loaded):
+        result = translate_with_plamo(
+            {"config": "Config", "disable": "Disable Mod"},
+            model_name="plamo-3-translate-0.8b", repair_model="lfm2.5"
+        )
+        self.assertEqual(result, {})
+        repair.assert_not_called()
+        self.assertEqual(post.call_count, 2)
 
     @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
     @patch("plamo_repair.requests.post")
