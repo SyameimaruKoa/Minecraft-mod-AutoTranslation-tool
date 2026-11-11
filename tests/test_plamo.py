@@ -231,6 +231,19 @@ class PlamoTranslationTests(unittest.TestCase):
         post.assert_not_called()
 
     @patch("mod_translator.requests.post")
+    def test_glossary_applies_after_inline_color_code(self, post):
+        post.return_value = response_with("<mc_style_0>スズ")
+        result = translate_with_plamo(
+            {"a": "§eTin"}, model_name="plamo-3-translate-2b",
+            glossary=[{"source": "Tin", "target": "スズ"}]
+        )
+        self.assertEqual(result["a"], "§eスズ")
+        self.assertIn(
+            "<|plamo:index|>Tin<|plamo:item|>スズ",
+            post.call_args.kwargs["json"]["prompt"]
+        )
+
+    @patch("mod_translator.requests.post")
     def test_missing_style_markers_fail_without_repeated_gpu_requests(self, post):
         post.return_value = response_with("設定を変更")
         result = translate_with_plamo(
