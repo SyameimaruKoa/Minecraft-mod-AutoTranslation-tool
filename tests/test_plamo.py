@@ -196,6 +196,35 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(post.call_count, 21)
 
     @patch("mod_translator.requests.post")
+    def test_section_sign_colors_and_styles_are_never_sent_to_model(self, post):
+        source = "§eSome settings will change.§l Your current settings are saved."
+        post.side_effect = [response_with("一部の設定が変更されます。"), response_with("現在の設定は保存されます。")]
+        result = translate_with_plamo(
+            {"msg": source}, model_name="plamo-3-translate-2b", history_size=0
+        )
+        self.assertEqual(
+            result["msg"],
+            "§e一部の設定が変更されます。§l 現在の設定は保存されます。"
+        )
+        self.assertEqual(post.call_count, 2)
+        for call in post.call_args_list:
+            self.assertNotIn("§e", call.kwargs["json"]["prompt"])
+            self.assertNotIn("§l", call.kwargs["json"]["prompt"])
+
+    @patch("mod_translator.requests.post")
+    def test_adjacent_style_codes_and_whitespace_are_preserved(self, post):
+        post.return_value = response_with("石")
+        result = translate_with_plamo(
+            {"a": " §a§lStone§r "}, model_name="plamo-3-translate-2b"
+        )
+        self.assertEqual(result["a"], " §a§l石§r ")
+        self.assertEqual(post.call_count, 1)
+        post.reset_mock()
+        result = translate_with_plamo({"a": "§a§l§r"}, model_name="plamo-3-translate-2b")
+        self.assertEqual(result["a"], "§a§l§r")
+        post.assert_not_called()
+
+    @patch("mod_translator.requests.post")
     def test_format_rejection_does_not_abort_mod_output(self, post):
         with tempfile.TemporaryDirectory() as folder:
             mods = os.path.join(folder, "mods")
@@ -213,8 +242,8 @@ class PlamoTranslationTests(unittest.TestCase):
                 plamo_form="plain", plamo_glossary=None, plamo_context="",
                 plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
             )
-            post.side_effect = [response_with("設定を変更。"), response_with("設定を変更。"),
-                                response_with("設定を変更。"), response_with("石")]
+            post.side_effect = [response_with("§r設定を変更。"), response_with("§r設定を変更。"),
+                                response_with("§r設定を変更。"), response_with("石")]
             with patch("mod_translator.time.sleep"):
                 ModTranslator(opts).run()
             result_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
