@@ -41,11 +41,13 @@ def get_loaded_lm_studio_models(api_url):
         ) from error
 
 
-def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=3):
+def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=3, cancel_event=None):
     if policy not in ("error", "wait"):
         raise ValueError("モデルの未ロード時の動作はerrorまたはwaitで指定してください")
     announced = False
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError(f"モデル[{model}]のロード待機を中断しました")
         loaded = get_loaded_lm_studio_models(api_url)
         if model in loaded:
             if announced:
@@ -65,8 +67,8 @@ def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=
         time.sleep(poll_seconds)
 
 
-def repair_plamo_translation(source, rejected, model, api_url, load_policy="error"):
-    active_model = require_loaded_lm_studio_model(model, api_url, load_policy)
+def repair_plamo_translation(source, rejected, model, api_url, load_policy="error", cancel_event=None):
+    active_model = require_loaded_lm_studio_model(model, api_url, load_policy, cancel_event=cancel_event)
     payload = {
         "model": active_model,
         "messages": [
