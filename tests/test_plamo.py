@@ -330,6 +330,38 @@ class PlamoTranslationTests(unittest.TestCase):
                 self.assertEqual(json.load(saved)["item.demo.stone"], "石")
 
     @patch("mod_translator.requests.post")
+    def test_prior_styled_cache_is_refreshed_but_plain_cache_is_reused(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            os.makedirs(mods)
+            output = os.path.join(folder, "pack")
+            filename = "demo.jar"
+            lang_path = "assets/demo/lang/en_us.json"
+            sources = {"styled": "§eStone", "plain": "Wood"}
+            with zipfile.ZipFile(os.path.join(mods, filename), "w") as archive:
+                archive.writestr(lang_path, json.dumps(sources))
+            opts = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-2b", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
+            )
+            old = ModTranslator(opts)
+            entries = {
+                old.plamo_cache_key(filename, lang_path, key, source, old.plamo_previous_settings_id):
+                    "§e岩" if key == "styled" else "木"
+                for key, source in sources.items()
+            }
+            with open(old.plamo_cache_file, "w", encoding="utf-8") as saved:
+                json.dump(entries, saved, ensure_ascii=False)
+            post.return_value = response_with("<mc_style_0>石")
+            ModTranslator(opts).run()
+            post.assert_called_once()
+            result_path = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(result_path, encoding="utf-8") as saved:
+                self.assertEqual(json.load(saved), {"styled": "§e石", "plain": "木"})
+
+    @patch("mod_translator.requests.post")
     def test_calls_completions_api_once_per_unique_text(self, post):
         post.return_value = response_with("石")
         result = translate_with_plamo({"a": "Stone", "b": "Stone"}, model_name="test-model", api_url="http://localhost:8080/v1/completions")
