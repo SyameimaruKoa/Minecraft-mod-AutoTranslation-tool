@@ -196,9 +196,11 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(post.call_count, 21)
 
     @patch("mod_translator.requests.post")
-    def test_section_sign_colors_and_styles_are_never_sent_to_model(self, post):
+    def test_style_codes_are_masked_without_splitting_full_sentence(self, post):
         source = "§eSome settings will change.§l Your current settings are saved."
-        post.side_effect = [response_with("一部の設定が変更されます。"), response_with("現在の設定は保存されます。")]
+        post.return_value = response_with(
+            "<mc_style_0>一部の設定が変更されます。<mc_style_1> 現在の設定は保存されます。"
+        )
         result = translate_with_plamo(
             {"msg": source}, model_name="plamo-3-translate-2b", history_size=0
         )
@@ -206,23 +208,45 @@ class PlamoTranslationTests(unittest.TestCase):
             result["msg"],
             "§e一部の設定が変更されます。§l 現在の設定は保存されます。"
         )
-        self.assertEqual(post.call_count, 2)
-        for call in post.call_args_list:
-            self.assertNotIn("§e", call.kwargs["json"]["prompt"])
-            self.assertNotIn("§l", call.kwargs["json"]["prompt"])
+        post.assert_called_once()
+        prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertIn(
+            "<mc_style_0>Some settings will change.<mc_style_1> Your current settings are saved.",
+            prompt
+        )
+        self.assertNotIn("§e", prompt)
+        self.assertNotIn("§l", prompt)
 
     @patch("mod_translator.requests.post")
     def test_adjacent_style_codes_and_whitespace_are_preserved(self, post):
-        post.return_value = response_with("石")
+        post.return_value = response_with("<mc_style_0><mc_style_1>石<mc_style_2>")
         result = translate_with_plamo(
             {"a": " §a§lStone§r "}, model_name="plamo-3-translate-2b"
         )
         self.assertEqual(result["a"], " §a§l石§r ")
-        self.assertEqual(post.call_count, 1)
+        post.assert_called_once()
         post.reset_mock()
         result = translate_with_plamo({"a": "§a§l§r"}, model_name="plamo-3-translate-2b")
         self.assertEqual(result["a"], "§a§l§r")
         post.assert_not_called()
+
+    @patch("mod_translator.requests.post")
+    def test_missing_style_markers_fail_without_repeated_gpu_requests(self, post):
+        post.return_value = response_with("設定を変更")
+        result = translate_with_plamo(
+            {"message": "§eChange defaults.§l Keep settings."}, model_name="plamo-3-translate-2b"
+        )
+        self.assertEqual(result, {})
+        post.assert_called_once()
+
+    @patch("mod_translator.requests.post")
+    def test_existing_style_placeholder_is_not_overwritten(self, post):
+        post.return_value = response_with("<mc_stylex_0><mc_style_0>石")
+        result = translate_with_plamo(
+            {"a": "§a<mc_style_0>Stone"}, model_name="plamo-3-translate-2b"
+        )
+        self.assertEqual(result["a"], "§a<mc_style_0>石")
+        post.assert_called_once()
 
     @patch("mod_translator.requests.post")
     def test_format_rejection_does_not_abort_mod_output(self, post):
@@ -242,8 +266,7 @@ class PlamoTranslationTests(unittest.TestCase):
                 plamo_form="plain", plamo_glossary=None, plamo_context="",
                 plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
             )
-            post.side_effect = [response_with("§r設定を変更。"), response_with("§r設定を変更。"),
-                                response_with("§r設定を変更。"), response_with("石")]
+            post.side_effect = [response_with("設定を変更。"), response_with("石")]
             with patch("mod_translator.time.sleep"):
                 ModTranslator(opts).run()
             result_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
@@ -251,7 +274,7 @@ class PlamoTranslationTests(unittest.TestCase):
                 translated = json.load(saved)
             self.assertEqual(translated["item.demo.formatted"], original["item.demo.formatted"])
             self.assertEqual(translated["item.demo.normal"], "石")
-            self.assertEqual(post.call_count, 4)
+            self.assertEqual(post.call_count, 2)
 
     @patch("mod_translator.requests.post")
     def test_nonstring_json_values_do_not_crash_output(self, post):
