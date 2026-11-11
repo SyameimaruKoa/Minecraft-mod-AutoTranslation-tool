@@ -82,6 +82,32 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertFalse(plamo_format_is_preserved("Give %s to %d", "%dに%sを与える"))
         self.assertTrue(plamo_format_is_preserved("Give %s to %d", "%sに%dを与える"))
 
+    def test_literal_percentages_are_not_printf_placeholders(self):
+        self.assertTrue(plamo_format_is_preserved(
+            "This is 100% of the selected GUI scale.",
+            "選択されたGUIスケールの100%に相当する。"
+        ))
+        self.assertTrue(plamo_format_is_preserved(
+            "Set the size to 30% default.",
+            "サイズを既定の30%に設定する。"
+        ))
+        self.assertTrue(plamo_format_is_preserved(
+            "Display % of the selected amount.",
+            "選択した量の割合を表示する。"
+        ))
+        self.assertFalse(plamo_format_is_preserved("Value % d", "値 %d"))
+        self.assertFalse(plamo_format_is_preserved("Value %s", "値 %d"))
+
+    @patch("mod_translator.requests.post")
+    def test_percentage_description_translates_on_first_request(self, post):
+        post.return_value = response_with("現在のGUIスケールの100%の大きさ。")
+        source = "How big the ingame button guide is. This is 100% of the currently selected GUI scale."
+        result = translate_with_plamo(
+            {"guide": source}, model_name="plamo-3-translate-2b"
+        )
+        self.assertEqual(result["guide"], "現在のGUIスケールの100%の大きさ。")
+        post.assert_called_once()
+
     def test_minecraft_colors_tags_and_linebreaks(self):
         self.assertTrue(plamo_format_is_preserved("§a§C%1$s <amount>\nNext", "<amount> §C%1$s §a\n次"))
         self.assertFalse(plamo_format_is_preserved("§aHello", "§bこんにちは"))
