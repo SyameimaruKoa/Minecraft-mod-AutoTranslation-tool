@@ -233,60 +233,57 @@ switch ($engine_choice) {
     }
     "4" {
         $args_list += "--engine", "plamo"
-        Write-Log "PLaMo 3 Translate: LM StudioのAPIサーバーを起動しておくのじゃ。" "Cyan"
-        $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:1234/v1/completions)"
-        if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
-            $args_list += "--plamo-api-url", "$plamo_url"
-        }
-        $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
-        if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
-            $args_list += "--model", "$plamo_model"
-        }
-        $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
-        if ($plamo_form -eq "2") {
-            $args_list += "--plamo-form", "polite"
-        }
-        $plamo_glossary = Read-Host "用語集JSONのパス（空欄でなし）"
-        if (-not [string]::IsNullOrWhiteSpace($plamo_glossary)) {
-            $plamo_glossary = $plamo_glossary -replace '"', ''
-            if (-not (Test-Path -LiteralPath $plamo_glossary -PathType Leaf)) {
-                Write-Log "エラー: 用語集ファイルが見つからぬぞ: $plamo_glossary" "Red"
-                exit 1
-            }
-            $args_list += "--plamo-glossary", "$plamo_glossary"
-        }
-        $plamo_context = Read-Host "参考文脈のUTF-8テキストファイル（空欄で自動文脈のみ）"
-        if (-not [string]::IsNullOrWhiteSpace($plamo_context)) {
-            $plamo_context = $plamo_context -replace '"', ''
-            if (-not (Test-Path -LiteralPath $plamo_context -PathType Leaf)) {
-                Write-Log "エラー: 文脈ファイルが見つからぬぞ: $plamo_context" "Red"
-                exit 1
-            }
-            $args_list += "--plamo-context-file", "$plamo_context"
-        }
-        $plamo_history = Read-Host "直前の対訳を何件参考にするか？ [Enter: 3 / 0: 無効 / 最大10]"
-        if (-not [string]::IsNullOrWhiteSpace($plamo_history)) {
-            if ($plamo_history -notmatch '^\d+$' -or [int]$plamo_history -gt 10) {
-                Write-Log "エラー: 履歴数は0から10の整数を入力するのじゃ。" "Red"
-                exit 1
-            }
-            $args_list += "--plamo-history", "$plamo_history"
-        }
-        $repair_model = Read-Host "構文修復モデルのLM StudioモデルID（空欄で無効 / 例: LFM2.5-1.2B-Instruct）"
+        Write-Log "PLaMoモデルはLM Studioでロード済みのものを自動検出するのじゃ。" "Cyan"
+        $repair_model = Read-Host "構文修復用モデルID（Enterで修復なし。例: lfm2.5-350m）"
         if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
             $args_list += "--repair-model", "$repair_model"
-            $repair_url = Read-Host "修復モデルのChat Completions API URL（Enterで http://localhost:1234/v1/chat/completions）"
-            if (-not [string]::IsNullOrWhiteSpace($repair_url)) {
-                $args_list += "--repair-api-url", "$repair_url"
+            Write-Log "未ロードのモデルはLM Studioで手動ロードするまで待機するのじゃ。" "Cyan"
+        }
+        $advanced_choice = Read-Host "詳細設定を変更する？ [y/N]"
+        if ($advanced_choice -match "^[yY]$") {
+            $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:1234/v1/completions)"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
+                $args_list += "--plamo-api-url", "$plamo_url"
             }
-            Write-Log "翻訳モデルと修復モデルの両方をLM Studioで事前にロードするのじゃ。自動ロードは行わぬ。" "Cyan"
-            $repair_policy = Read-Host "モデルが未ロードの場合: [1] エラーで終了（既定）/ [2] 手動ロードまで待機"
-            if ($repair_policy -eq "2") {
-                $args_list += "--model-load-policy", "wait"
+            $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
+                $args_list += "--model", "$plamo_model"
             }
-            elseif (-not [string]::IsNullOrWhiteSpace($repair_policy) -and $repair_policy -ne "1") {
-                Write-Log "エラー: 1または2を入力するのじゃ。" "Red"
-                exit 1
+            $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
+            if ($plamo_form -eq "2") {
+                $args_list += "--plamo-form", "polite"
+            }
+            $plamo_glossary = Read-Host "用語集JSONのパス（空欄でなし）"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_glossary)) {
+                $plamo_glossary = $plamo_glossary -replace '"', ''
+                if (-not (Test-Path -LiteralPath $plamo_glossary -PathType Leaf)) {
+                    Write-Log "エラー: 用語集ファイルが見つからぬぞ: $plamo_glossary" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-glossary", "$plamo_glossary"
+            }
+            $plamo_context = Read-Host "参考文脈のUTF-8テキストファイル（空欄で自動文脈のみ）"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_context)) {
+                $plamo_context = $plamo_context -replace '"', ''
+                if (-not (Test-Path -LiteralPath $plamo_context -PathType Leaf)) {
+                    Write-Log "エラー: 文脈ファイルが見つからぬぞ: $plamo_context" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-context-file", "$plamo_context"
+            }
+            $plamo_history = Read-Host "直前の対訳を何件参考にするか？ [Enter: 3 / 0: 無効 / 最大10]"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_history)) {
+                if ($plamo_history -notmatch '^\d+$' -or [int]$plamo_history -gt 10) {
+                    Write-Log "エラー: 履歴数は0から10の整数を入力するのじゃ。" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-history", "$plamo_history"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
+                $repair_url = Read-Host "修復モデルのChat Completions API URL（Enterで http://localhost:1234/v1/chat/completions）"
+                if (-not [string]::IsNullOrWhiteSpace($repair_url)) {
+                    $args_list += "--repair-api-url", "$repair_url"
+                }
             }
         }
     }
