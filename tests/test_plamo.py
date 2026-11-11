@@ -225,6 +225,30 @@ class PlamoTranslationTests(unittest.TestCase):
             self.assertEqual(post.call_count, 4)
 
     @patch("mod_translator.requests.post")
+    def test_nonstring_json_values_do_not_crash_output(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            os.makedirs(mods)
+            output = os.path.join(folder, "pack")
+            with zipfile.ZipFile(os.path.join(mods, "demo.jar"), "w") as archive:
+                archive.writestr(
+                    "assets/demo/lang/en_us.json",
+                    json.dumps({"item.demo.stone": "Stone", "numeric": 12, "flag": True})
+                )
+            opts = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-2b", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
+            )
+            post.return_value = response_with("石")
+            ModTranslator(opts).run()
+            result_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(result_file, encoding="utf-8") as saved:
+                self.assertEqual(json.load(saved), {"item.demo.stone": "石", "numeric": 12, "flag": True})
+            post.assert_called_once()
+
+    @patch("mod_translator.requests.post")
     def test_existing_persistent_cache_is_read_after_prompt_optimization(self, post):
         with tempfile.TemporaryDirectory() as folder:
             mods = os.path.join(folder, "mods")
