@@ -1198,7 +1198,7 @@ class ModTranslator:
 
         final_data = {}
         for k, v in data.items():
-            if is_valid_translation(k, v):
+            if isinstance(v, str) and is_valid_translation(k, v):
                 final_data[k] = v
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
