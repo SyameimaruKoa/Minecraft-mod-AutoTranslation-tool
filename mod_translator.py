@@ -715,6 +715,20 @@ def mask_minecraft_style_codes(source):
     return PLAMO_STYLE_PATTERN.sub(mask, source), markers
 
 
+def mask_plamo_linebreaks(source):
+    markers = []
+    prefix = "mc_line"
+    while re.search(r"<" + prefix + r"_\d+>", source):
+        prefix += "x"
+
+    def mask(match):
+        token = f"<{prefix}_{len(markers)}>"
+        markers.append((token, match.group()))
+        return token
+
+    return re.sub(r"\r\n|\r|\n|\\n", mask, source), markers
+
+
 def plamo_format_is_preserved(source, translated):
     """番号付き引数の順序変更は許し、番号なし引数の順序を厳密に保つ。"""
     expected = PLAMO_FORMAT_PATTERN.findall(source)
@@ -822,6 +836,7 @@ def translate_with_plamo(
         if entry_context and "<|plamo:" in entry_context:
             raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
         masked_source, style_markers = mask_minecraft_style_codes(source)
+        masked_source, linebreak_markers = mask_plamo_linebreaks(masked_source)
         prefix = masked_source[:len(masked_source) - len(masked_source.lstrip())]
         suffix = masked_source[len(masked_source.rstrip()):]
         prompt = build_plamo_prompt(
@@ -830,7 +845,7 @@ def translate_with_plamo(
             glossary=relevant_plamo_glossary(masked_source, glossary),
             history=stable_history if history_size > 0 else []
         )
-        max_tokens = max(512, min(4096, len(source) // 2 + 128))
+        max_tokens = max(512, min(4096, len(masked_source) // 2 + 128))
         payload = {
             "model": model,
             "prompt": prompt,
@@ -860,8 +875,8 @@ def translate_with_plamo(
                 if not is_valid_translation(masked_source, result):
                     raise ValueError("空の翻訳結果、またはエラー文字列")
                 if not plamo_format_is_preserved(masked_source, result):
-                    if style_markers:
-                        print("警告: 装飾コードのプレースホルダーを保持できないため原文維持（同一条件での再試行は省略）")
+                    if style_markers or linebreak_markers:
+                        print("警告: 装飾・改行プレースホルダーが一致せず原文維持（同一条件での再試行は省略）")
                         break
                     raise ValueError(
                         "色コード・フォーマット指定子・変数・改行が原文と一致しない: "
@@ -870,10 +885,16 @@ def translate_with_plamo(
                         f"改行={masked_source.count(chr(10))}/{result.count(chr(10))}, "
                         f"\\\\n={masked_source.count(chr(92) + 'n')}/{result.count(chr(92) + 'n')}"
                     )
-                for marker, original_style in style_markers:
-                    result = result.replace(marker, original_style)
+                newline_positions = [
+                    result.find(marker) for marker, _ in linebreak_markers
+                ]
+                if newline_positions != sorted(newline_positions):
+                    print("警告: 改行の順序が変更されたため原文維持")
+                    break
+                for marker, original_value in style_markers + linebreak_markers:
+                    result = result.replace(marker, original_value)
                 if not plamo_format_is_preserved(source, result):
-                    print("警告: 装飾コードを復元できないため訳文を不採用")
+                    print("警告: 装飾コード・改行を復元できないため訳文を不採用")
                     break
                 translated_value = result
                 break
