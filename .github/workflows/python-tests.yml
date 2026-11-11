@@ -14,6 +14,24 @@ jobs:
             - uses: actions/setup-python@v5
               with:
                   python-version: "3.11"
+            - name: Validate PowerShell syntax and UTF-8 BOM
+              shell: pwsh
+              run: |
+                  $tokens = $null
+                  $errors = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile(
+                      (Join-Path $PWD "start.ps1"),
+                      [ref]$tokens,
+                      [ref]$errors
+                  )
+                  if ($errors.Count -gt 0) {
+                      $errors | ForEach-Object { Write-Error $_.ToString() }
+                      exit 1
+                  }
+                  $bytes = [System.IO.File]::ReadAllBytes((Join-Path $PWD "start.ps1"))
+                  if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+                      throw "start.ps1 must have a UTF-8 BOM"
+                  }
             - name: Create Python virtual environment
               run: python -m venv .venv
             - name: Install test dependencies
