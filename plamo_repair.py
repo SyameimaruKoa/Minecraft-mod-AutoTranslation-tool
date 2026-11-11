@@ -14,6 +14,36 @@ def syntax_free_text(value):
     return SYNTAX_PATTERN.sub("", value).strip()
 
 
+def has_japanese_translation(value):
+    return (
+        isinstance(value, str)
+        and re.search(r"[\u3040-\u30ff\u3400-\u9fff]", syntax_free_text(value)) is not None
+    )
+
+
+def apply_syntax_offsets(japanese, tokens, offsets):
+    if (
+        not isinstance(japanese, str)
+        or not isinstance(offsets, list)
+        or len(tokens) != len(offsets)
+    ):
+        return None
+    if any(
+        type(offset) is not int or offset < 0 or offset > len(japanese)
+        for offset in offsets
+    ):
+        return None
+    if offsets != sorted(offsets):
+        return None
+    insertions = {}
+    for token, offset in zip(tokens, offsets):
+        insertions.setdefault(offset, []).append(token)
+    return "".join(
+        "".join(insertions.get(index, [])) + (japanese[index] if index < len(japanese) else "")
+        for index in range(len(japanese) + 1)
+    )
+
+
 def syntax_text_unchanged(draft, repaired):
     return (
         isinstance(draft, str) and isinstance(repaired, str)
@@ -51,7 +81,7 @@ def restore_simple_syntax(source, draft):
 
     tokens = list(SYNTAX_PATTERN.finditer(source))
     plain_draft = SYNTAX_PATTERN.sub("", draft).strip()
-    if not plain_draft:
+    if not has_japanese_translation(plain_draft):
         return None
 
     if not tokens:
@@ -151,8 +181,8 @@ def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=
 
 
 def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait", cancel_event=None):
-    if not isinstance(rejected, str) or not syntax_free_text(rejected):
-        print("警告: PLaMoの日本語訳がないため、構文だけでは修復できません")
+    if not has_japanese_translation(rejected):
+        print("警告: PLaMoの日本語本文がないため、構文だけでは修復できません")
         return None
 
     deterministic = restore_simple_syntax(source, rejected)
@@ -160,31 +190,45 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
         return deterministic
 
     active_model = require_loaded_lm_studio_model(model, api_url, load_policy, cancel_event=cancel_event)
-    required_syntax = SYNTAX_PATTERN.findall(source)
+    japanese = syntax_free_text(rejected)
+    syntax_tokens = SYNTAX_PATTERN.findall(source)
+    if not syntax_tokens:
+        return None
+    indexed_boundaries = "".join(
+        f"[{index}]{character}" for index, character in enumerate(japanese)
+    ) + f"[{len(japanese)}]"
     payload = {
         "model": active_model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are a syntax-only editor, NOT a translator. "
-                    "The Japanese draft is immutable user content. "
-                    "Your only task is to place, remove, or reorder the exact formatting "
-                    "tokens found in the English source (printf, {0}, Minecraft section-sign codes, "
-                    "and newline escapes). Never translate, paraphrase, correct spelling, "
-                    "add new Japanese words, or change any existing Japanese characters. "
-                    "Remove invented formatting tokens that are absent from the source. "
-                    "Return one JSON object with the repaired_text property."
+                    "You are a syntax-placement assistant, NOT a translator. "
+                    "Return ONLY a JSON array of integer character-boundary offsets. "
+                    "Do not produce Japanese text or a revised translation. "
+                    "The Japanese text is immutable and will be assembled by Python. "
+                    "For each syntax token in source order, choose the zero-based insertion "
+                    "boundary in the Japanese string. A boundary is before the character "
+                    "of that index; the final index is the end of the string. "
+                    "Each offset must be between 0 and text_length inclusive, "
+                    "in nondecreasing order. Do not add, remove or change any token."
                 )
             },
             {
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "english_source_for_syntax_only": source,
-                        "japanese_draft_do_not_retranslate": rejected,
-                        "required_syntax_tokens": required_syntax,
-                        "japanese_text_must_remain_exactly": syntax_free_text(rejected)
+                        "english_source_for_token_locations": source,
+                        "immutable_japanese": japanese,
+                        "text_length": len(japanese),
+                        "indexed_character_boundaries": indexed_boundaries,
+                        "required_tokens_in_source_order": syntax_tokens,
+                        "example": {
+                            "japanese": "赤い花",
+                            "token": "{0}",
+                            "offsets": [2],
+                            "assembled_by_python": "赤い{0}花"
+                        }
                     },
                     ensure_ascii=False
                 )
@@ -193,18 +237,23 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
         "response_format": {
             "type": "json_schema",
             "json_schema": {
-                "name": "minecraft_syntax_repair",
+                "name": "minecraft_syntax_positions",
                 "strict": True,
                 "schema": {
                     "type": "object",
-                    "properties": {"repaired_text": {"type": "string"}},
-                    "required": ["repaired_text"],
+                    "properties": {
+                        "offsets": {
+                            "type": "array",
+                            "items": {"type": "integer"}
+                        }
+                    },
+                    "required": ["offsets"],
                     "additionalProperties": False
                 }
             }
         },
         "temperature": 0,
-        "max_tokens": max(256, min(4096, len(rejected) * 2 + 128)),
+        "max_tokens": max(128, min(1024, len(syntax_tokens) * 20 + 64)),
         "stream": False
     }
     try:
@@ -214,11 +263,13 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
                 f"構文修復モデルのAPIエラー HTTP {response.status_code}: {response.text[:400]}"
             )
         message = response.json()["choices"][0]["message"]["content"]
-        repaired = json.loads(message)["repaired_text"]
-        if not isinstance(repaired, str):
-            raise ValueError("構文修復応答が文字列ではありません")
+        offsets = json.loads(message)["offsets"]
+        repaired = apply_syntax_offsets(japanese, syntax_tokens, offsets)
+        if repaired is None:
+            print("警告: 補助モデルの構文位置が不正なため、修復結果を不採用")
+            return None
         if not syntax_text_unchanged(rejected, repaired):
-            print("警告: 補助モデルが日本語本文を変更したため、修復結果を不採用")
+            print("警告: 日本語本文の不変条件を満たさないため、修復結果を不採用")
             return None
         if not _format_matches(source, repaired):
             print("警告: 補助モデルが構文を復元できませんでした")
