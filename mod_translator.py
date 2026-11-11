@@ -9,7 +9,7 @@ import requests
 import traceback
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged
+from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
 from deep_translator import GoogleTranslator
 
 # --- 定数設定 ---
@@ -1104,7 +1104,7 @@ def translate_with_plamo(
                         translated_value = candidate
 
             if translated_value is None:
-                if repair_executor:
+                if repair_executor and has_japanese_translation(rejected_for_repair):
                     pending_repairs.append((
                         source, source_keys,
                         repair_executor.submit(
@@ -1340,7 +1340,9 @@ class ModTranslator:
         if self.repair_model:
             repair_key = self.plamo_repair_cache_key(filename, lang_path, key, source)
             if repair_key in self.plamo_cache:
-                return self.plamo_cache[repair_key]
+                repaired = self.plamo_cache[repair_key]
+                if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
+                    return repaired
         if PLAMO_STYLE_PATTERN.search(source):
             return None
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
