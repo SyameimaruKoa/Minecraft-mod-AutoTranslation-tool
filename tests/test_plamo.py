@@ -177,6 +177,83 @@ class PlamoTranslationTests(unittest.TestCase):
                 self.assertEqual(json.load(saved), {"item.demo.stone": "石", "item.demo.wood": "木"})
 
     @patch("mod_translator.requests.post")
+    def test_prompt_reuses_stable_prefix_and_periodically_refreshes_history(self, post):
+        post.side_effect = [response_with("翻訳") for _ in range(21)]
+        samples = {"key_" + str(i): "Item " + str(i) for i in range(21)}
+        translate_with_plamo(
+            samples, model_name="plamo-3-translate-2b",
+            context="Minecraft Mod: test.jar",
+            history_size=3, history_refresh=16
+        )
+        prompts = [call.kwargs["json"]["prompt"] for call in post.call_args_list]
+        marker = "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Item "
+        prefix_four = prompts[3].split(marker, 1)[0]
+        prefix_nineteen = prompts[18].split(marker, 1)[0]
+        prefix_twenty = prompts[19].split(marker, 1)[0]
+        self.assertEqual(prefix_four, prefix_nineteen)
+        self.assertNotEqual(prefix_four, prefix_twenty)
+        self.assertTrue(all("Minecraft Mod: test.jar" in prompt for prompt in prompts))
+        self.assertEqual(post.call_count, 21)
+
+    @patch("mod_translator.requests.post")
+    def test_format_rejection_does_not_abort_mod_output(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            os.makedirs(mods)
+            output = os.path.join(folder, "pack")
+            original = {
+                "item.demo.formatted": "§eChange defaults.§l Keep settings.",
+                "item.demo.normal": "Stone"
+            }
+            with zipfile.ZipFile(os.path.join(mods, "demo.jar"), "w") as archive:
+                archive.writestr("assets/demo/lang/en_us.json", json.dumps(original))
+            opts = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-2b", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
+            )
+            post.side_effect = [response_with("設定を変更。"), response_with("設定を変更。"),
+                                response_with("設定を変更。"), response_with("石")]
+            with patch("mod_translator.time.sleep"):
+                ModTranslator(opts).run()
+            result_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(result_file, encoding="utf-8") as saved:
+                translated = json.load(saved)
+            self.assertEqual(translated["item.demo.formatted"], original["item.demo.formatted"])
+            self.assertEqual(translated["item.demo.normal"], "石")
+            self.assertEqual(post.call_count, 4)
+
+    @patch("mod_translator.requests.post")
+    def test_existing_persistent_cache_is_read_after_prompt_optimization(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            os.makedirs(mods)
+            output = os.path.join(folder, "pack")
+            filename = "demo.jar"
+            lang_path = "assets/demo/lang/en_us.json"
+            with zipfile.ZipFile(os.path.join(mods, filename), "w") as archive:
+                archive.writestr(lang_path, json.dumps({"item.demo.stone": "Stone"}))
+            opts = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-2b", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3, gemma_only=False, force=False
+            )
+            previous = ModTranslator(opts)
+            key = previous.plamo_cache_key(
+                filename, lang_path, "item.demo.stone", "Stone",
+                previous.plamo_legacy_settings_id
+            )
+            with open(previous.plamo_cache_file, "w", encoding="utf-8") as saved:
+                json.dump({key: "石"}, saved, ensure_ascii=False)
+            ModTranslator(opts).run()
+            post.assert_not_called()
+            result_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(result_file, encoding="utf-8") as saved:
+                self.assertEqual(json.load(saved)["item.demo.stone"], "石")
+
+    @patch("mod_translator.requests.post")
     def test_calls_completions_api_once_per_unique_text(self, post):
         post.return_value = response_with("石")
         result = translate_with_plamo({"a": "Stone", "b": "Stone"}, model_name="test-model", api_url="http://localhost:8080/v1/completions")
