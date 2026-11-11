@@ -172,6 +172,54 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
 
     @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
     @patch("plamo_repair.requests.post")
+    def test_long_sentence_only_requests_a_placeholder_offset(self, post, require):
+        source = (
+            "The server does not have %s installed. Please remove the mod from "
+            "your game or install it on the server as well."
+        )
+        japanese = (
+            "サーバーにはインストールされていません。"
+            "ゲームからModを削除するか、サーバーにも導入してください。"
+        )
+        insertion = japanese.index("インストール")
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({"offsets": [insertion]})}}]
+        }
+        result = repair_plamo_translation(
+            source, japanese, "lfm2.5", "http://localhost:1234/v1/chat/completions"
+        )
+        self.assertEqual(result, japanese[:insertion] + "%s" + japanese[insertion:])
+        self.assertIn('"immutable_japanese":', post.call_args.kwargs["json"]["messages"][1]["content"])
+        self.assertNotIn("repaired_text", post.call_args.kwargs["json"]["response_format"]["json_schema"]["schema"]["properties"])
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
+    def test_old_punctuation_only_repair_cache_is_ignored(self, loaded):
+        import tempfile
+        from types import SimpleNamespace
+        from mod_translator import ModTranslator
+
+        with tempfile.TemporaryDirectory() as folder:
+            args = SimpleNamespace(
+                input=folder, output=folder, engine="plamo", key=None,
+                model="plamo-3-translate-0.8b",
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3,
+                gemma_only=False, force=False, repair_model="lfm2.5-1.2b",
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="wait"
+            )
+            translator = ModTranslator(args)
+            translator.save_plamo_repair_translation(
+                "broken.jar", "assets/broken/lang/en_us.json", "config", "Config", ":"
+            )
+            self.assertIsNone(ModTranslator(args).get_plamo_translation(
+                "broken.jar", "assets/broken/lang/en_us.json", "config", "Config"
+            ))
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("plamo_repair.requests.post")
     def test_schema_cannot_make_lfm_rewrite_the_japanese_draft(self, post, require):
         post.return_value = Mock(status_code=200)
         post.return_value.json.return_value = {
