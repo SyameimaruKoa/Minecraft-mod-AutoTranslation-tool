@@ -827,7 +827,7 @@ def translate_with_plamo(
         prompt = build_plamo_prompt(
             masked_source.strip(), form,
             context=entry_context,
-            glossary=relevant_plamo_glossary(source, glossary),
+            glossary=relevant_plamo_glossary(masked_source, glossary),
             history=stable_history if history_size > 0 else []
         )
         max_tokens = max(512, min(4096, len(source) // 2 + 128))
