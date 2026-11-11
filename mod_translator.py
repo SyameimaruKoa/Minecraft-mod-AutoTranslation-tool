@@ -772,7 +772,7 @@ def translate_plamo_multiline_glossary(
     )
     masked, line_markers = mask_plamo_linebreaks(masked)
     protected = style_markers + format_markers + line_markers
-    terms = relevant_plamo_glossary(source, glossary)
+    terms = relevant_plamo_glossary(masked, glossary)
     terms += [{"source": marker, "target": marker} for marker, _ in protected]
     prefix = masked[:len(masked) - len(masked.lstrip())]
     suffix = masked[len(masked.rstrip()):]
@@ -947,7 +947,7 @@ def translate_with_plamo(
                     masked_source.strip(), form,
                     context=entry_context,
                     glossary=(
-                        relevant_plamo_glossary(part, glossary)
+                        relevant_plamo_glossary(masked_source, glossary)
                         + [{"source": marker, "target": marker} for marker, _ in protected]
                     ),
                     history=stable_history if history_size > 0 else []
