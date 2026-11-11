@@ -352,7 +352,7 @@ class PlamoTranslationTests(unittest.TestCase):
 
     @patch("mod_translator.requests.post")
     def test_existing_style_placeholder_is_not_overwritten(self, post):
-        post.return_value = response_with("<mc_stylex_0><mc_style_0>石")
+        post.return_value = response_with("<mc_stylex_0><mc_fmt_0>石")
         result = translate_with_plamo(
             {"a": "§a<mc_style_0>Stone"}, model_name="plamo-3-translate-2b"
         )
@@ -484,20 +484,47 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["stop"], ["<|plamo:tag|>", "<|plamo:bos|>"])
         self.assertEqual(kwargs["json"]["temperature"], 0)
 
-    @patch("mod_translator.time.sleep")
     @patch("mod_translator.requests.post")
-    def test_retries_when_placeholders_change(self, post, sleep):
-        post.side_effect = [response_with("石 %d"), response_with("石 %s")]
-        result = translate_with_plamo({"a": "Stone %s"}, model_name="plamo-3-translate-2b")
-        self.assertEqual(result, {"a": "石 %s"})
-        self.assertEqual(post.call_count, 2)
+    def test_printf_placeholders_are_masked_and_restored(self, post):
+        source = "Version mismatch for %s. The server expects version %s, but you currently have %s."
+        post.return_value = response_with(
+            "<mc_fmt_0>のバージョンが一致しない。サーバーは<mc_fmt_1>を要求するが、現在は<mc_fmt_2>。"
+        )
+        result = translate_with_plamo({"a": source}, model_name="plamo-3-translate-0.8b")
+        self.assertEqual(
+            result["a"], "%sのバージョンが一致しない。サーバーは%sを要求するが、現在は%s。"
+        )
+        post.assert_called_once()
+        prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertIn("<mc_fmt_0>", prompt)
+        self.assertIn("<mc_fmt_1>", prompt)
+        self.assertIn("<mc_fmt_2>", prompt)
+        self.assertIn("<|plamo:index|><mc_fmt_0><|plamo:item|><mc_fmt_0>", prompt)
+        self.assertNotIn("Version mismatch for %s", prompt)
 
-    @patch("mod_translator.time.sleep")
     @patch("mod_translator.requests.post")
-    def test_preserves_original_on_invalid_responses(self, post, sleep):
-        post.return_value = response_with("石 %d")
-        self.assertEqual(translate_with_plamo({"a": "Stone %s"}, model_name="plamo-3-translate-2b"), {})
-        self.assertEqual(post.call_count, 3)
+    def test_only_format_tokens_do_not_use_gpu(self, post):
+        source = {"a": "%s", "b": "%s %s", "c": "%1$s", "d": "§a"}
+        self.assertEqual(
+            translate_with_plamo(source, model_name="plamo-3-translate-0.8b"), source
+        )
+        post.assert_not_called()
+
+    @patch("mod_translator.requests.post")
+    def test_extra_printf_tokens_from_0_8b_are_rejected_once(self, post):
+        post.return_value = response_with("%s %s %s %s %s")
+        self.assertEqual(
+            translate_with_plamo({"a": "Config"}, model_name="plamo-3-translate-0.8b"),
+            {}
+        )
+        post.assert_called_once()
+
+    @patch("mod_translator.requests.post")
+    def test_broken_masked_printf_tokens_are_rejected_once(self, post):
+        post.return_value = response_with("石 %s")
+        result = translate_with_plamo({"a": "Stone %s"}, model_name="plamo-3-translate-2b")
+        self.assertEqual(result, {})
+        post.assert_called_once()
 
     @patch("mod_translator.time.sleep")
     @patch("mod_translator.requests.post")
