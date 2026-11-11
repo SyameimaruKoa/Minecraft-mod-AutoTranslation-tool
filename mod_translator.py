@@ -860,8 +860,10 @@ def translate_with_plamo(
                 if not is_valid_translation(masked_source, result):
                     raise ValueError("空の翻訳結果、またはエラー文字列")
                 if not plamo_format_is_preserved(masked_source, result):
-                    print("警告: 書式・変数・改行が一致しないため訳文を不採用（同一条件での再試行は省略）")
-                    break
+                    if style_markers:
+                        print("警告: 装飾コードのプレースホルダーを保持できないため原文維持（同一条件での再試行は省略）")
+                        break
+                    raise ValueError("色コード・フォーマット指定子・変数・改行が原文と一致しない")
                 for marker, original_style in style_markers:
                     result = result.replace(marker, original_style)
                 if not plamo_format_is_preserved(source, result):
