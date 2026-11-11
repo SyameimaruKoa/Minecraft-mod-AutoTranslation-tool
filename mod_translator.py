@@ -863,7 +863,13 @@ def translate_with_plamo(
                     if style_markers:
                         print("警告: 装飾コードのプレースホルダーを保持できないため原文維持（同一条件での再試行は省略）")
                         break
-                    raise ValueError("色コード・フォーマット指定子・変数・改行が原文と一致しない")
+                    raise ValueError(
+                        "色コード・フォーマット指定子・変数・改行が原文と一致しない: "
+                        f"原文={PLAMO_FORMAT_PATTERN.findall(masked_source)!r}, "
+                        f"訳文={PLAMO_FORMAT_PATTERN.findall(result)!r}, "
+                        f"改行={masked_source.count(chr(10))}/{result.count(chr(10))}, "
+                        f"\\\\n={masked_source.count(chr(92) + 'n')}/{result.count(chr(92) + 'n')}"
+                    )
                 for marker, original_style in style_markers:
                     result = result.replace(marker, original_style)
                 if not plamo_format_is_preserved(source, result):
