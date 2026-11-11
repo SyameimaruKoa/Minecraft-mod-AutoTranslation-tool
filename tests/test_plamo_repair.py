@@ -1,6 +1,8 @@
 import json
+import io
 import threading
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
 from mod_translator import translate_with_plamo
@@ -143,6 +145,29 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(repaired, [("first", "石 %s")])
         self.assertEqual(post.call_count, 2)
         self.assertEqual(repair.call_count, 1)
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="ok")
+    @patch("mod_translator.repair_plamo_translation", side_effect=["北", None])
+    @patch("mod_translator.requests.post")
+    def test_repair_details_and_final_summary_are_visible(self, post, repair, loaded):
+        post.return_value = complete("%s %s")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = translate_with_plamo(
+                {"north": "North", "east": "East"},
+                model_name="plamo-3-translate-0.8b", repair_model="lfm2.5-350m"
+            )
+        self.assertEqual(result, {"north": "北"})
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(repair.call_count, 2)
+        self.assertIn('修復依頼[1件目]', output.getvalue())
+        self.assertIn('修復[1件成功]', output.getvalue())
+        self.assertIn('原文: "North"', output.getvalue())
+        self.assertIn('PLaMoの失敗訳:', output.getvalue())
+        self.assertIn('修復後: "北"', output.getvalue())
+        self.assertIn('修復[失敗・原文維持]', output.getvalue())
+        self.assertIn('修復集計: 依頼 2件 / 成功 1件 / 失敗・原文維持 1件', output.getvalue())
+        self.assertEqual(loaded.call_args_list[0].args[2], "wait")
 
     @patch("mod_translator.require_loaded_lm_studio_model", return_value="ok")
     @patch("mod_translator.repair_plamo_translation", return_value="石")
