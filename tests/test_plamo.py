@@ -187,9 +187,9 @@ class PlamoTranslationTests(unittest.TestCase):
         )
         prompts = [call.kwargs["json"]["prompt"] for call in post.call_args_list]
         marker = "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Item "
-        prefix_four = prompts[3].split(marker, 1)[0]
-        prefix_nineteen = prompts[18].split(marker, 1)[0]
-        prefix_twenty = prompts[19].split(marker, 1)[0]
+        prefix_four = prompts[3].rsplit(marker, 1)[0]
+        prefix_nineteen = prompts[18].rsplit(marker, 1)[0]
+        prefix_twenty = prompts[19].rsplit(marker, 1)[0]
         self.assertEqual(prefix_four, prefix_nineteen)
         self.assertNotEqual(prefix_four, prefix_twenty)
         self.assertTrue(all("Minecraft Mod: test.jar" in prompt for prompt in prompts))
