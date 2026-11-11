@@ -1004,13 +1004,30 @@ class ModTranslator:
             self.plamo_settings_id = hashlib.sha256(
                 json.dumps(options, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
+            legacy_options = {
+                "model": self.model_name, "form": self.plamo_form,
+                "glossary": self.plamo_glossary, "context": self.plamo_context,
+                "history": self.plamo_history, "format_version": 2
+            }
+            self.plamo_legacy_settings_id = hashlib.sha256(
+                json.dumps(legacy_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
             print(f"情報: PLaMo 3 Translate [{self.model_name}], 用語集 {len(self.plamo_glossary)}件")
 
-    def plamo_cache_key(self, filename, lang_path, key, source):
+    def plamo_cache_key(self, filename, lang_path, key, source, settings_id=None):
         return json.dumps(
-            [self.plamo_settings_id, filename, lang_path, key, source],
+            [settings_id or self.plamo_settings_id, filename, lang_path, key, source],
             ensure_ascii=False, separators=(",", ":")
         )
+
+    def get_plamo_translation(self, filename, lang_path, key, source):
+        cache_key = self.plamo_cache_key(filename, lang_path, key, source)
+        if cache_key in self.plamo_cache:
+            return self.plamo_cache[cache_key]
+        legacy_key = self.plamo_cache_key(
+            filename, lang_path, key, source, self.plamo_legacy_settings_id
+        )
+        return self.plamo_cache.get(legacy_key)
 
     def save_plamo_translation(self, filename, lang_path, key, source, translated):
         cache_key = self.plamo_cache_key(filename, lang_path, key, source)
@@ -1041,7 +1058,7 @@ class ModTranslator:
                     to_translate = {
                         key: source for key, source in content.items()
                         if key not in IGNORE_KEYS and isinstance(source, str)
-                        and (self.force or self.plamo_cache_key(filename, lang_path, key, source) not in self.plamo_cache)
+                        and (self.force or self.get_plamo_translation(filename, lang_path, key, source) is None)
                     }
                     if to_translate:
                         print(f"  -> PLaMo翻訳対象: {len(to_translate)} 項目")
@@ -1070,8 +1087,8 @@ class ModTranslator:
                     translated_data = content.copy()
                     for key, source in content.items():
                         if isinstance(source, str) and key not in IGNORE_KEYS:
-                            cached = self.plamo_cache.get(
-                                self.plamo_cache_key(filename, lang_path, key, source)
+                            cached = self.get_plamo_translation(
+                                filename, lang_path, key, source
                             )
                             if cached is not None:
                                 translated_data[key] = cached
