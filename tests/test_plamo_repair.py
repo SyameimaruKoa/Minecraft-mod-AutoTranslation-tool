@@ -124,7 +124,7 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
              "この操作はシングルプレイヤーでしか実行できません。",
              "§cこの操作はシングルプレイヤーでしか実行できません。§r"),
             ("§6Modified on %s§r", "変更日", "§6変更日 %s§r"),
-            ("Anvil Cost: %s", "金床コスト", "金床コスト: %s"),
+            ("Anvil Cost: %s", "金床コスト", "金床コスト %s"),
             ("Available", "利用可能 %s", "利用可能")
         ]
         for source, draft, expected in examples:
