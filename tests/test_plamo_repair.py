@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from mod_translator import translate_with_plamo
 from plamo_repair import (
     get_loaded_lm_studio_models, repair_plamo_translation,
-    require_loaded_lm_studio_model
+    require_loaded_lm_studio_model, restore_simple_syntax, syntax_text_unchanged
 )
 
 
@@ -97,21 +97,74 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
 
     @patch("plamo_repair.require_loaded_lm_studio_model", return_value="lfm-instance")
     @patch("plamo_repair.requests.post")
-    def test_repair_uses_selected_model_and_json_schema(self, post, require):
+    def test_repair_only_inserts_syntax_without_translating(self, post, require):
         post.return_value = Mock(status_code=200)
         post.return_value.json.return_value = {
-            "choices": [{"message": {"content": '{"translation":"金床コスト: %s"}'}}]
+            "choices": [{"message": {"content": '{"repaired_text":"エンチャント%sレベル"}'}}]
         }
         answer = repair_plamo_translation(
-            "Anvil Cost: %s", "金床コスト", "lfm2.5",
+            "Enchant %s levels", "エンチャントレベル", "lfm2.5",
             "http://localhost:1234/v1/chat/completions"
         )
-        self.assertEqual(answer, "金床コスト: %s")
+        self.assertEqual(answer, "エンチャント%sレベル")
         require.assert_called_once()
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "lfm-instance")
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertEqual(payload["temperature"], 0)
+        self.assertIn("NOT a translator", payload["messages"][0]["content"])
+        self.assertIn("japanese_draft_do_not_retranslate", payload["messages"][1]["content"])
+
+    @patch("plamo_repair.require_loaded_lm_studio_model")
+    @patch("plamo_repair.requests.post")
+    def test_simple_prefix_suffix_formats_need_no_secondary_inference(self, post, require):
+        examples = [
+            ("Red {0}", "赤", "赤 {0}"),
+            ("§cThis operation only works in single player§r",
+             "この操作はシングルプレイヤーでしか実行できません。",
+             "§cこの操作はシングルプレイヤーでしか実行できません。§r"),
+            ("§6Modified on %s§r", "変更日", "§6変更日 %s§r"),
+            ("Anvil Cost: %s", "金床コスト", "金床コスト: %s"),
+            ("Available", "利用可能 %s", "利用可能")
+        ]
+        for source, draft, expected in examples:
+            self.assertEqual(
+                repair_plamo_translation(
+                    source, draft, "lfm", "http://localhost:1234/v1/chat/completions"
+                ), expected
+            )
+        post.assert_not_called()
+        require.assert_not_called()
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("plamo_repair.requests.post")
+    def test_secondary_retranslation_is_rejected_even_with_valid_format(self, post, require):
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '{"repaired_text":"処理済みフレーム数: %1$d / %2$d"}'}}]
+        }
+        original = "Обработано кадров: %1$d / %2$d"
+        rejected = "OpenEXRファイルシリーズ"
+        self.assertIsNone(
+            repair_plamo_translation(
+                original, rejected, "lfm2.5",
+                "http://localhost:1234/v1/chat/completions"
+            )
+        )
+        self.assertFalse(syntax_text_unchanged(rejected, "処理済みフレーム数: %1$d / %2$d"))
+        post.assert_called_once()
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("plamo_repair.requests.post")
+    def test_valid_syntax_repair_cannot_change_existing_japanese(self, post, require):
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '{"repaired_text":"追加エンチャント%sレベル"}'}}]
+        }
+        self.assertIsNone(repair_plamo_translation(
+            "Enchant %s levels", "エンチャントレベル", "lfm2.5",
+            "http://localhost:1234/v1/chat/completions"
+        ))
 
     @patch("mod_translator.require_loaded_lm_studio_model", return_value="ok")
     @patch("mod_translator.repair_plamo_translation")
@@ -150,7 +203,7 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
     @patch("mod_translator.repair_plamo_translation", side_effect=["北", None])
     @patch("mod_translator.requests.post")
     def test_repair_details_and_final_summary_are_visible(self, post, repair, loaded):
-        post.return_value = complete("%s %s")
+        post.side_effect = [complete("北 %s"), complete("東 %s")]
         output = io.StringIO()
         with redirect_stdout(output):
             result = translate_with_plamo(
