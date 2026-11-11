@@ -155,6 +155,59 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertEqual(repair.call_count, 1)
 
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
+    def test_repair_cache_tracks_selected_model(self, loaded):
+        import tempfile
+        from types import SimpleNamespace
+        from mod_translator import ModTranslator
+
+        with tempfile.TemporaryDirectory() as folder:
+            args = SimpleNamespace(
+                input=folder, output=folder, engine="plamo", key=None,
+                model="plamo-3-translate-0.8b",
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3,
+                gemma_only=False, force=False,
+                repair_model="lfm2.5-1.2b",
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="error"
+            )
+            translator = ModTranslator(args)
+            translator.save_plamo_repair_translation(
+                "demo.jar", "assets/demo/lang/en_us.json",
+                "cost", "Anvil Cost: %s", "金床コスト: %s"
+            )
+            self.assertEqual(
+                ModTranslator(args).get_plamo_translation(
+                    "demo.jar", "assets/demo/lang/en_us.json", "cost", "Anvil Cost: %s"
+                ),
+                "金床コスト: %s"
+            )
+            args.repair_model = "larger-model"
+            self.assertIsNone(
+                ModTranslator(args).get_plamo_translation(
+                    "demo.jar", "assets/demo/lang/en_us.json", "cost", "Anvil Cost: %s"
+                )
+            )
+
+    @patch("mod_translator.require_loaded_lm_studio_model")
+    def test_generic_llm_constructor_does_not_enable_repair(self, loaded):
+        import tempfile
+        from types import SimpleNamespace
+        from mod_translator import ModTranslator
+
+        with tempfile.TemporaryDirectory() as folder:
+            args = SimpleNamespace(
+                input=folder, output=folder, engine="lmstudio", key=None,
+                model="regular-llm", plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_history=3,
+                gemma_only=False, force=False, repair_model="lfm2.5"
+            )
+            translator = ModTranslator(args)
+            self.assertIsNone(translator.repair_model)
+            loaded.assert_not_called()
+
     @patch("mod_translator.require_loaded_lm_studio_model")
     @patch("mod_translator.requests.post")
     def test_mode_without_repair_keeps_existing_behavior(self, post, loaded):
