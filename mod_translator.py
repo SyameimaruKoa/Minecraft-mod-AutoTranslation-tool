@@ -768,7 +768,8 @@ def resolve_plamo_model(api_url):
 
 def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
-    glossary=None, context=None, context_fn=None, history_size=3, on_translation=None
+    glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
+    history_refresh=16
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -780,6 +781,10 @@ def translate_with_plamo(
     start_time = time.time()
     model = model_name or resolve_plamo_model(api_url)
     history = []
+    stable_history = []
+    history_since_refresh = 0
+    if history_refresh < 1:
+        raise ValueError("history_refresh は1以上で指定してください")
     glossary = glossary or []
 
     for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
@@ -800,7 +805,7 @@ def translate_with_plamo(
             source.strip(), form,
             context=entry_context,
             glossary=relevant_plamo_glossary(source, glossary),
-            history=history[-history_size:] if history_size > 0 else []
+            history=stable_history if history_size > 0 else []
         )
         max_tokens = max(512, min(4096, len(source) // 2 + 128))
         payload = {
@@ -852,6 +857,10 @@ def translate_with_plamo(
             if history_size > 0 and len(source) < 300 and len(translated_value) < 300:
                 history.append((source.strip(), translated_value.strip()))
                 history = history[-history_size:]
+                history_since_refresh += 1
+                if len(stable_history) < history_size or history_since_refresh >= history_refresh:
+                    stable_history = list(history)
+                    history_since_refresh = 0
 
         elapsed = time.time() - start_time
         eta = format_time(elapsed / processed * (total - processed))
@@ -938,6 +947,8 @@ class ModTranslator:
         self.plamo_api_url = args.plamo_api_url
         self.plamo_form = args.plamo_form
         self.plamo_history = args.plamo_history
+        self.plamo_history_refresh = getattr(args, "plamo_history_refresh", 16)
+        self.plamo_key_context = getattr(args, "plamo_key_context", False)
         self.plamo_glossary = []
         self.plamo_context = ""
         self.gemma_only = args.gemma_only
@@ -986,7 +997,9 @@ class ModTranslator:
             options = {
                 "model": self.model_name, "form": self.plamo_form,
                 "glossary": self.plamo_glossary, "context": self.plamo_context,
-                "history": self.plamo_history, "format_version": 2
+                "history": self.plamo_history,
+                "history_refresh": self.plamo_history_refresh,
+                "key_context": self.plamo_key_context, "format_version": 3
             }
             self.plamo_settings_id = hashlib.sha256(
                 json.dumps(options, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -1042,8 +1055,12 @@ class ModTranslator:
                         translate_with_plamo(
                             to_translate, self.model_name, self.plamo_api_url, self.plamo_form,
                             glossary=self.plamo_glossary,
-                            context_fn=lambda key: base_context + f" 翻訳対象のキー: {key}.",
+                            context=base_context,
+                            context_fn=(
+                                lambda key: base_context + f" 翻訳対象のキー: {key}."
+                            ) if self.plamo_key_context else None,
                             history_size=self.plamo_history,
+                            history_refresh=self.plamo_history_refresh,
                             on_translation=lambda key, src, dst: self.save_plamo_translation(
                                 filename, lang_path, key, src, dst
                             )
@@ -1191,13 +1208,17 @@ if __name__ == "__main__":
     parser.add_argument("--plamo-glossary", help="PLaMo用語集のJSONファイル（原語と訳語）")
     parser.add_argument("--plamo-context", default="", help="PLaMoの参考文脈（直接指定）")
     parser.add_argument("--plamo-context-file", help="PLaMoの参考文脈を記したUTF-8テキストファイル")
-    parser.add_argument("--plamo-history", type=int, default=3, help="前の対訳を参考にする数（0で無効、既定3件）")
+    parser.add_argument("--plamo-history", type=int, default=3, help="参考にする対訳の最大件数（0で無効、既定3件）")
+    parser.add_argument("--plamo-history-refresh", type=int, default=16, help="対訳履歴を更新する翻訳件数（1で従来の毎回更新、既定16件）")
+    parser.add_argument("--plamo-key-context", action="store_true", help="各翻訳キーを参考文脈に含める（プロンプトキャッシュ再利用率は低下）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
     args = parser.parse_args()
     if args.plamo_history < 0 or args.plamo_history > 10:
         parser.error("--plamo-history は0〜10を指定してください")
+    if args.plamo_history_refresh < 1:
+        parser.error("--plamo-history-refresh は1以上を指定してください")
 
     translator = ModTranslator(args)
     translator.run()
