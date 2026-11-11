@@ -1033,10 +1033,14 @@ class ModTranslator:
                 "glossary": self.plamo_glossary, "context": self.plamo_context,
                 "history": self.plamo_history,
                 "history_refresh": self.plamo_history_refresh,
-                "key_context": self.plamo_key_context, "format_version": 3
+                "key_context": self.plamo_key_context, "format_version": 4
             }
             self.plamo_settings_id = hashlib.sha256(
                 json.dumps(options, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            previous_options = dict(options, format_version=3)
+            self.plamo_previous_settings_id = hashlib.sha256(
+                json.dumps(previous_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
             legacy_options = {
                 "model": self.model_name, "form": self.plamo_form,
@@ -1058,10 +1062,15 @@ class ModTranslator:
         cache_key = self.plamo_cache_key(filename, lang_path, key, source)
         if cache_key in self.plamo_cache:
             return self.plamo_cache[cache_key]
-        legacy_key = self.plamo_cache_key(
-            filename, lang_path, key, source, self.plamo_legacy_settings_id
-        )
-        return self.plamo_cache.get(legacy_key)
+        if PLAMO_STYLE_PATTERN.search(source):
+            return None
+        for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
+            previous_key = self.plamo_cache_key(
+                filename, lang_path, key, source, settings_id
+            )
+            if previous_key in self.plamo_cache:
+                return self.plamo_cache[previous_key]
+        return None
 
     def save_plamo_translation(self, filename, lang_path, key, source, translated):
         cache_key = self.plamo_cache_key(filename, lang_path, key, source)
