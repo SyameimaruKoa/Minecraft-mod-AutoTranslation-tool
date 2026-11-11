@@ -900,7 +900,7 @@ def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
     history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
-    model_load_policy="error", on_repair_translation=None
+    model_load_policy="wait", on_repair_translation=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -926,6 +926,48 @@ def translate_with_plamo(
     repair_executor = ThreadPoolExecutor(max_workers=1) if repair_model else None
     repair_stop = threading.Event()
     pending_repairs = []
+    repair_stats = {"submitted": 0, "succeeded": 0, "failed": 0}
+
+    def collect_completed_repairs(wait_all=False):
+        remaining = []
+        for original, keys, future, draft in pending_repairs:
+            if not wait_all and not future.done():
+                remaining.append((original, keys, future, draft))
+                continue
+            failure_reason = None
+            try:
+                repaired = future.result()
+            except Exception as error:
+                repaired = None
+                failure_reason = str(error)
+            accepted = (
+                isinstance(repaired, str) and repaired != original
+                and is_valid_translation(original, repaired)
+                and plamo_format_is_preserved(original, repaired)
+            )
+            if accepted:
+                for key in keys:
+                    translated_results[key] = repaired
+                    callback = on_repair_translation or on_translation
+                    if callback:
+                        callback(key, original, repaired)
+                repair_stats["succeeded"] += 1
+                print(f"  修復[{repair_stats['succeeded']}件成功] {model} → {repair_model}")
+                print(f"    原文: {json.dumps(original, ensure_ascii=False)}")
+                print(f"    PLaMoの失敗訳: {json.dumps(draft, ensure_ascii=False)}")
+                print(f"    修復後: {json.dumps(repaired, ensure_ascii=False)}")
+            else:
+                repair_stats["failed"] += 1
+                if not failure_reason:
+                    failure_reason = (
+                        "書式が原文と一致しない"
+                        if isinstance(repaired, str) and not plamo_format_is_preserved(original, repaired)
+                        else "修復結果なし・不正な翻訳"
+                    )
+                print(f"  修復[失敗・原文維持]: {failure_reason}")
+                print(f"    原文: {json.dumps(original, ensure_ascii=False)}")
+                print(f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}")
+        pending_repairs[:] = remaining
 
     try:
         for processed, (source, source_keys) in enumerate(unique_texts.items(), 1):
@@ -1067,9 +1109,11 @@ def translate_with_plamo(
                         repair_executor.submit(
                             repair_plamo_translation, source, rejected_for_repair,
                             repair_model, repair_api_url, model_load_policy, repair_stop
-                        )
+                        ),
+                        rejected_for_repair
                     ))
-                    print(f"情報: 修復キューへ送信: {source[:65]}")
+                    repair_stats["submitted"] += 1
+                    print(f"  修復依頼[{repair_stats['submitted']}件目] {json.dumps(source, ensure_ascii=False)[:140]}")
                 else:
                     print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
             else:
@@ -1088,25 +1132,20 @@ def translate_with_plamo(
                         stable_history = list(history)
                         history_since_refresh = 0
 
+            collect_completed_repairs()
             elapsed = time.time() - start_time
             eta = format_time(elapsed / processed * (total - processed))
             print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
 
-        for source, keys, future in pending_repairs:
-            repaired = future.result()
-            if (
-                isinstance(repaired, str) and repaired != source
-                and is_valid_translation(source, repaired)
-                and plamo_format_is_preserved(source, repaired)
-            ):
-                for key in keys:
-                    translated_results[key] = repaired
-                    callback = on_repair_translation or on_translation
-                    if callback:
-                        callback(key, source, repaired)
-                print(f"情報: 修復モデル[{repair_model}]で構文を保持して修復しました: {source[:55]}")
-            else:
-                print(f"警告: 修復モデルの結果を採用できず原文維持: {source[:70]}")
+        if repair_stats["submitted"]:
+            print(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
+        collect_completed_repairs(wait_all=True)
+        if repair_model:
+            print(
+                f"修復集計: 依頼 {repair_stats['submitted']}件 / "
+                f"成功 {repair_stats['succeeded']}件 / "
+                f"失敗・原文維持 {repair_stats['failed']}件"
+            )
     finally:
         repair_stop.set()
         if repair_executor:
@@ -1197,7 +1236,7 @@ class ModTranslator:
         self.plamo_key_context = getattr(args, "plamo_key_context", False)
         self.repair_model = getattr(args, "repair_model", None) if self.engine == "plamo" else None
         self.repair_api_url = getattr(args, "repair_api_url", LMSTUDIO_API_URL)
-        self.model_load_policy = getattr(args, "model_load_policy", "error")
+        self.model_load_policy = getattr(args, "model_load_policy", "wait")
         self.plamo_glossary = []
         self.plamo_context = ""
         self.gemma_only = args.gemma_only
@@ -1523,7 +1562,7 @@ if __name__ == "__main__":
     parser.add_argument("--plamo-key-context", action="store_true", help="各翻訳キーを参考文脈に含める（プロンプトキャッシュ再利用率は低下）")
     parser.add_argument("--repair-model", help="PLaMo専用: 別途手動ロードして使用する構文修復モデルID（例: LFM2.5-1.2B-Instruct）")
     parser.add_argument("--repair-api-url", default=LMSTUDIO_API_URL, help="PLaMo専用: 修復モデル用Chat Completions API URL")
-    parser.add_argument("--model-load-policy", choices=["error", "wait"], default="error", help="PLaMo専用: 修復モデル利用時の未ロード動作（errorで終了、waitで手動ロードを待機）")
+    parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
 
