@@ -9,6 +9,7 @@ import requests
 import traceback
 import threading
 import math
+import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, SynchronizedModelSelector, SharedRequestPacer
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
@@ -930,7 +931,8 @@ def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
     history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
-    model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True
+    model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
+    repair_log=None, repair_stats_report=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -943,6 +945,27 @@ def translate_with_plamo(
     if workers > 1 and len(unique_texts) > 1:
         group_items = list(unique_texts.items())
         chunk_size = max(1, min(16, math.ceil(len(group_items) / (workers * 2))))
+        if show_progress and len(text_dict) != len(unique_texts):
+            skipped = len(text_dict) - len(unique_texts)
+            print(
+                f"  -> 重複を除いた推論対象: {len(unique_texts)} 項目"
+                f"（共通訳を使う重複 {skipped} 項目）"
+            )
+        repair_messages = queue.SimpleQueue()
+        overall_repair_stats = {"submitted": 0, "succeeded": 0, "failed": 0}
+        repair_stats_lock = threading.Lock()
+
+        def capture_repair_log(message):
+            repair_messages.put(message)
+
+        def flush_repair_log(completed=None, total=None):
+            while not repair_messages.empty():
+                print(repair_messages.get())
+
+        def record_group_stats(stats):
+            with repair_stats_lock:
+                for name in overall_repair_stats:
+                    overall_repair_stats[name] += stats[name]
         groups = {
             keys[0]: {"source": source, "keys": keys}
             for source, keys in group_items
@@ -973,7 +996,9 @@ def translate_with_plamo(
                 history_refresh=history_refresh, repair_model=repair_model,
                 repair_api_url=repair_api_url, model_load_policy=model_load_policy,
                 on_repair_translation=saved_repair_callback,
-                workers=1, show_progress=False
+                workers=1, show_progress=False,
+                repair_log=capture_repair_log,
+                repair_stats_report=record_group_stats
             )
             return {
                 canonical: translated[canonical]
@@ -981,8 +1006,16 @@ def translate_with_plamo(
             }
 
         complete_groups = translate_parallel_batches(
-            groups, workers, chunk_size, translate_group, "PLaMo"
+            groups, workers, chunk_size, translate_group, "PLaMo",
+            on_progress=flush_repair_log
         )
+        flush_repair_log()
+        if repair_model and show_progress:
+            print(
+                f"修復集計: 依頼 {overall_repair_stats['submitted']}件 / "
+                f"成功 {overall_repair_stats['succeeded']}件 / "
+                f"失敗・原文維持 {overall_repair_stats['failed']}件"
+            )
         return {
             key: complete_groups[unique_texts[source][0]]
             for key, source in text_dict.items()
@@ -1009,6 +1042,12 @@ def translate_with_plamo(
     pending_repairs = []
     repair_stats = {"submitted": 0, "succeeded": 0, "failed": 0}
 
+    def emit_repair_log(message):
+        if repair_log is not None:
+            repair_log(message)
+        else:
+            print(message)
+
     def collect_completed_repairs(wait_all=False):
         remaining = []
         for original, keys, future, draft in pending_repairs:
@@ -1034,10 +1073,12 @@ def translate_with_plamo(
                     if callback:
                         callback(key, original, repaired)
                 repair_stats["succeeded"] += 1
-                print(f"  修復[{repair_stats['succeeded']}件成功] {model} → {repair_model}")
-                print(f"    原文: {json.dumps(original, ensure_ascii=False)}")
-                print(f"    PLaMoの失敗訳: {json.dumps(draft, ensure_ascii=False)}")
-                print(f"    修復後: {json.dumps(repaired, ensure_ascii=False)}")
+                emit_repair_log(
+                    f"  修復[{repair_stats['succeeded']}件成功] {model} → {repair_model}\n"
+                    f"    原文: {json.dumps(original, ensure_ascii=False)}\n"
+                    f"    PLaMoの失敗訳: {json.dumps(draft, ensure_ascii=False)}\n"
+                    f"    修復後: {json.dumps(repaired, ensure_ascii=False)}"
+                )
             else:
                 repair_stats["failed"] += 1
                 if not failure_reason:
@@ -1046,9 +1087,11 @@ def translate_with_plamo(
                         if isinstance(repaired, str) and not plamo_format_is_preserved(original, repaired)
                         else "修復結果なし・不正な翻訳"
                     )
-                print(f"  修復[失敗・原文維持]: {failure_reason}")
-                print(f"    原文: {json.dumps(original, ensure_ascii=False)}")
-                print(f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}")
+                emit_repair_log(
+                    f"  修復[失敗・原文維持]: {failure_reason}\n"
+                    f"    原文: {json.dumps(original, ensure_ascii=False)}\n"
+                    f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}"
+                )
         pending_repairs[:] = remaining
 
     try:
@@ -1195,7 +1238,10 @@ def translate_with_plamo(
                         rejected_for_repair
                     ))
                     repair_stats["submitted"] += 1
-                    print(f"  修復依頼[{repair_stats['submitted']}件目] {json.dumps(source, ensure_ascii=False)[:140]}")
+                    emit_repair_log(
+                        f"  修復依頼[{repair_stats['submitted']}件目] "
+                        f"{json.dumps(source, ensure_ascii=False)[:140]}"
+                    )
                 else:
                     print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
             else:
@@ -1221,9 +1267,11 @@ def translate_with_plamo(
                 print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
 
         if repair_stats["submitted"]:
-            print(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
+            emit_repair_log(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
         collect_completed_repairs(wait_all=True)
-        if repair_model:
+        if repair_stats_report is not None:
+            repair_stats_report(dict(repair_stats))
+        elif repair_model and show_progress:
             print(
                 f"修復集計: 依頼 {repair_stats['submitted']}件 / "
                 f"成功 {repair_stats['succeeded']}件 / "
