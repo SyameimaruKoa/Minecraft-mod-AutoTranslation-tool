@@ -225,13 +225,13 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
 
-### ColabのLM Link認証情報をGoogleドライブへ保存
+### ColabのLM Link認証状態をGoogleドライブへ保存
 
-`run_colab_server.ipynb`はLM Studio CLIのセットアップ後にGoogleドライブをマウントし、`~/.lmstudio/credentials`と`~/.lmstudio/hub`の認証情報を**AES-256-GCMで暗号化保存**する。保存先はDBV4 Colabと共通の`マイドライブ/.colab-secret/lmstudio/colab-lmlink-auth.v1.enc`じゃ。設定セルの`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有し、保存を無効化することもできる。
+`run_colab_server.ipynb`は`dbv4-wd14-tagger`のTailscaleと同じ方式で、LM Studioの認証状態を**そのままGoogleドライブに保存・次回自動復元**する。追加のパスフレーズやColabシークレットは不要じゃ。
 
-- 初回はLM Studioへブラウザ認証してから暗号化バックアップを作成。次回は同じパスフレーズで復元し、ログイン状態が有効なら認証を省略する。
-- パスフレーズは非表示入力。Colabのシークレット`LM_LINK_VAULT_PASSWORD`を登録すれば、毎回の入力を省略できる。パスフレーズ自体はGoogleドライブに保存しない。
-- LM Studioのデーモン用内部認証・モデル・ログはバックアップ対象に含めない。ログイン情報の形式が変わり復元に失敗した場合は再ログインし、保管庫を更新する。
+- Googleドライブの既定保存先は`MyDrive/.colab-secret/lmstudio/`。設定セルで`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有する。保存を無効化することもできる。
+- 初回はLM Studioのブラウザ認証が必要。ログイン後に`credentials`と`hub`の認証ファイルを直接保存し、次回起動時に復元する。有効なログイン状態なら再認証しない。
+- 内部デーモン用の`.internal`、モデル本体、ログは保存しない。ドライブ上の認証ファイルは追加暗号化せず保存されるため、ドライブの共有設定には注意すること。
 - モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
