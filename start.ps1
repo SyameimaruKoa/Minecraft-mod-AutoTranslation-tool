@@ -10,7 +10,7 @@
     主な機能:
     - Python環境のチェック
     - 仮想環境(.venv)の自動作成とライブラリインストール
-    - 翻訳エンジン（Google/Gemini/Local）の選択メニュー
+    - 翻訳エンジン（Google/Gemini/Local/PLaMo 3 Translate）の選択メニュー
     - Gemini APIキーの自動保存・読み込み(.env)
     - Modフォルダと出力先フォルダのドラッグ＆ドロップ入力対応
 
@@ -21,6 +21,9 @@
 .PARAMETER OutputPath
     [オプション] 出力するリソースパックのパス（フォルダ名）。
     デフォルトは "Output_Pack"。
+
+.PARAMETER Workers
+    [オプション] Gemini、Ollama、LM Studio、PLaMoの同時翻訳数。既定2、1で逐次実行。
 
 .EXAMPLE
     .\start.ps1
@@ -34,6 +37,10 @@
     .\start.ps1 -InputPath "C:\Games\Minecraft\mods" -OutputPath "MyJpPack"
     引数を指定して起動することも可能じゃ。
 
+.EXAMPLE
+    .\start.ps1 -Workers 4
+    LLMを最大4並列で翻訳する（Geminiはレート制限に合わせて送信間隔を調整）。
+
 .NOTES
     Author: Wise Wolf
     Version: 3.17 (Gemma-Only Mode Integration)
@@ -41,7 +48,9 @@
 
 param (
     [string]$InputPath = "",
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+    [ValidateRange(1, 16)]
+    [int]$Workers = 2
 )
 
 #region ヘルプ表示処理
@@ -161,9 +170,10 @@ Write-Host "翻訳エンジンを選択するのじゃ:" -ForegroundColor Green
 Write-Host " [1] Google Translate (無料/キー不要/精度並)"
 Write-Host " [2] Gemini AI (高速/要APIキー/高精度 - 推奨)"
 Write-Host " [3] Local LLM (Ollama/LM Studio)"
+Write-Host " [4] PLaMo 3 Translate (LM Studio)"
 Write-Host ""
 
-$engine_choice = Read-Host "番号を入力 [1-3]"
+$engine_choice = Read-Host "番号を入力 [1-4]"
 
 $args_list = @()
 $api_key = ""
@@ -230,10 +240,70 @@ switch ($engine_choice) {
             }
         }
     }
+    "4" {
+        $args_list += "--engine", "plamo"
+        Write-Log "PLaMoモデルはLM Studioでロード済みのものを自動検出するのじゃ。" "Cyan"
+        $repair_model = Read-Host "構文修復用モデルID（Enterで修復なし。例: lfm2.5-350m）"
+        if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
+            $args_list += "--repair-model", "$repair_model"
+            Write-Log "未ロードのモデルはLM Studioで手動ロードするまで待機するのじゃ。" "Cyan"
+        }
+        $advanced_choice = Read-Host "詳細設定を変更する？ [y/N]"
+        if ($advanced_choice -match "^[yY]$") {
+            $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:1234/v1/completions)"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
+                $args_list += "--plamo-api-url", "$plamo_url"
+            }
+            $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
+                $args_list += "--model", "$plamo_model"
+            }
+            $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
+            if ($plamo_form -eq "2") {
+                $args_list += "--plamo-form", "polite"
+            }
+            $plamo_glossary = Read-Host "用語集JSONのパス（空欄でなし）"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_glossary)) {
+                $plamo_glossary = $plamo_glossary -replace '"', ''
+                if (-not (Test-Path -LiteralPath $plamo_glossary -PathType Leaf)) {
+                    Write-Log "エラー: 用語集ファイルが見つからぬぞ: $plamo_glossary" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-glossary", "$plamo_glossary"
+            }
+            $plamo_context = Read-Host "参考文脈のUTF-8テキストファイル（空欄で自動文脈のみ）"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_context)) {
+                $plamo_context = $plamo_context -replace '"', ''
+                if (-not (Test-Path -LiteralPath $plamo_context -PathType Leaf)) {
+                    Write-Log "エラー: 文脈ファイルが見つからぬぞ: $plamo_context" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-context-file", "$plamo_context"
+            }
+            $plamo_history = Read-Host "直前の対訳を何件参考にするか？ [Enter: 3 / 0: 無効 / 最大10]"
+            if (-not [string]::IsNullOrWhiteSpace($plamo_history)) {
+                if ($plamo_history -notmatch '^\d+$' -or [int]$plamo_history -gt 10) {
+                    Write-Log "エラー: 履歴数は0から10の整数を入力するのじゃ。" "Red"
+                    exit 1
+                }
+                $args_list += "--plamo-history", "$plamo_history"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
+                $repair_url = Read-Host "修復モデルのChat Completions API URL（Enterで http://localhost:1234/v1/chat/completions）"
+                if (-not [string]::IsNullOrWhiteSpace($repair_url)) {
+                    $args_list += "--repair-api-url", "$repair_url"
+                }
+            }
+        }
+    }
     Default {
         Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
         $args_list += "--engine", "google"
     }
+}
+if ($engine_choice -in @("2", "3", "4")) {
+    $args_list += "--workers", "$Workers"
+    Write-Log "LLM並列数: $Workers" "Cyan"
 }
 #endregion
 

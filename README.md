@@ -30,6 +30,8 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
 
   - **Gemma 限定モード** : 高効率な「Gemma」モデルのみを使用するモード。Geminiが利用できない環境や、レート制限回避に最適。
 
+- **PLaMo 3 Translate** : LM StudioのOpenAI互換Completions APIに接続し、公式PFML3形式で翻訳する。
+
 - **Local / Cloud AI (Ollama / LM Studio / Google Colab)(推奨)** : ローカルPC、または Google Colab などの外部 GPU サーバーの LLM を使用。完全無料・無制限。
 
   - **LM Link 接続対応**: LM Studio の LM Link（アカウント連携）機能を利用し、Google Colab の強力な GPU をローカルPCの LM Studio と接続して、オフロード（身代わり推論）翻訳が行えるぞ。ローカルPCのGPUパワーが不足していても、クラウドで超高速翻訳が可能じゃ。
@@ -182,6 +184,113 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
       - 速度は少し遅いが高精度。また翻訳特化モデルのため破綻の心配が無い。
 
 
+
+- **[4] PLaMo 3 Translate（LM Studio）** :
+
+  - Preferred Networksの翻訳特化モデルを**LM Studio**から利用する。llama.cppを別途起動する必要はない。
+  - 公式のPFML3形式で英語から日本語に翻訳し、既存のキャッシュ・中断再開機能を使用する。
+  - 重複文字列は1回だけ翻訳する。`§a`などの色コード、`%s`などの書式指定子、`{name}`などの変数を照合し、壊れた訳文は再試行して採用しない。
+  - **セットアップ:**
+    1. LM Studioの「Discover」から[公式PLaMo 3 Translate 2B GGUF](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)（例: Q4_K_M）をダウンロードする。見つからなければGGUFを入手し、[LM Studioへインポート](https://lmstudio.ai/docs/app/advanced/import-model)する。
+    2. LM StudioでPLaMo 3 Translateをロードし、「Developer」タブでAPIサーバーを**Start Server**する（通常はポート1234）。
+    3. `run.bat`を実行し、メニュー**[4]**を選ぶ。URLはEnterで標準値（`http://127.0.0.1:1234/v1/completions`）。
+    4. モデルIDはEnterで自動検出する。複数のPLaMoモデルが見つかる場合は、LM StudioのモデルID（`GET http://localhost:1234/v1/models`で確認可能）を入力する。
+    5. 日本語の文体を選択する（標準は常体、選択で敬体）。
+  - **コマンドラインから実行（例）:**
+
+    ```powershell
+    python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-form plain
+    ```
+
+  - APIサーバーの接続先変更は`--plamo-api-url`、モデルIDの直接指定は`--model`を使用する。キャッシュにある文章を翻訳し直す場合は`--force`を併用する。
+  - 公式モデルの0.8B・2B・8B・31B（GGUF対応）から適切なサイズを選べる。モデルの詳細は[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
+
+### LLM翻訳の並列処理
+
+**Gemini・Ollama・LM Studio・PLaMo**で翻訳リクエストを複数同時に実行できる。Google Translateは対象外じゃ。
+
+- CLI: `--workers 2`（既定）、`--workers 1`で逐次実行。並列数は1以上を指定する。
+- PowerShell: `.\start.ps1 -Workers 4`（既定は2）。対話メニューに質問は追加しない。
+- Gemini: 既存のモデル優先順位・エラー時の切替・欠落項目の再試行を維持する。並列ワーカー間でモデル切替を同期し、モデル別のAPI送信間隔を共有するため、指定数を増やしてもレート制限を超えて連投しない。
+- Ollama / LM Studio: 最大20件のJSONバッチを複数実行する。少数の項目も並列数に合わせて分割する。
+- PLaMo: 原文の重複排除、書式保護、修復モデル、1件ごとのキャッシュ保存を維持する。対訳履歴は並列グループ内の順序を使うため、グループをまたぐ直前の対訳は共有しない。
+- 並列タスクの完了順に依存せず、返す翻訳結果は入力キーの順序で整列する。PLaMoのキャッシュ書き込みはロックで直列化する。
+
+例：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --workers 4
+.\start.ps1 -Workers 4
+```
+
+ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
+
+### PLaMo 3 Translateの翻訳品質を高める設定
+
+PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。
+
+- **自動参考文脈:** Mod名と各言語ファイルの共通文脈を利用する。キーごとの文脈を含めると共通プレフィックスが変化するため、既定では省き、必要な場合だけ`--plamo-key-context`で有効化する。独自の背景説明は`--plamo-context`または`--plamo-context-file`で追加できる。
+- **用語集:** `plamo_glossary.example.json`をコピー・編集して`--plamo-glossary`へ指定する。原語と訳語を固定できる。**一般用語は指定された用語集のみ使用する。`%s`等の書式指定子・改行・装飾コードの保護タグは、必要な文章だけ内部の用語集に自動追加する。**
+- **対訳履歴:** 同一言語ファイルで直前に翻訳した短い文章を最大3件参考にする（`--plamo-history 0`で無効化、最大10）。プロンプトキャッシュを効かせるため、対訳履歴は既定で16件翻訳するごとに更新する（`--plamo-history-refresh 1`で従来の毎回更新に戻せる）。履歴と訳語の一貫性を保ちながら、共通プロンプトの再評価を減らす。
+- **堅牢性:** 番号付き`%1$s`・`%2$s`の語順入替を許容し、番号なしの書式、`<amount>`の変数、改行の欠落を防ぐ。`%s`など書式のみの項目は推論せずそのまま保存する。本文中の書式指定子は一時タグに置換して保護する。`Anvil Cost: %s`など末尾に書式がある設定ラベルは文字部分だけ翻訳し、書式と区切り記号を後から復元する。Java版の`§a`・`§l`などの装飾コードに加え、実際の改行・文字列の`\\n`も一時的なプレースホルダーに置き換え、文章全体を一度に翻訳してから復元する。保護タグを原語＝訳語としてPLaMo公式用語集にも追加し、全文翻訳を優先する。タグの欠落や順序変更が起きた場合は、改行単位で再翻訳して元の改行を保持する。`&a`などはプラグイン等による代替表記であり、Mod・シェーダー向けの保護対象には含めない。0.8Bモデルが書式指定子を余分に生成した場合は同一条件での再試行を省き、原文を保持する。長文は出力上限を拡張し、打切り時は増やして再試行する。
+- **キャッシュ:** PLaMo専用`plamo_cache.json`にMod・キー・モデル・用語集・文脈ごとに保存する。翻訳が1件成功するたびに保存するので途中でサーバーが切れてもそれまでの訳文が残る。既存`trans_cache.json`は従来のエンジン用として保持する。
+- **既存キャッシュの継続利用:** この最適化以前の`plamo_cache.json`も読み込む。ただし以前の分割方式で生成された可能性がある`§`装飾付きの訳文だけは再翻訳し、それ以外はキャッシュを再利用する。
+
+例：用語集ファイル（`plamo_glossary.example.json`を編集して使用）
+
+```json
+{
+    "Tin": "スズ",
+    "Digital Miner": "デジタルマイナー",
+    "Redstone": "レッドストーン"
+}
+```
+
+例：参考文脈ファイル（UTF-8の任意のテキスト）
+
+```text
+This is the translation of item names and tooltips for a technology-focused Minecraft mod.
+「bank」が川や川岸を指す場面では、その情景を参考に翻訳する。
+```
+
+コマンドラインから指定するときの例：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-glossary "plamo_glossary.example.json" --plamo-context-file "my_mod_context.txt" --plamo-history 3
+```
+
+`run.bat`の[4]メニューでも用語集・文脈ファイル・履歴数を指定できる。なお、用語集の内容を変更すると設定別キャッシュを切り替えて翻訳をやり直す設計じゃ。
+
+### PLaMo専用：2モデルによる構文修復
+
+PLaMoの翻訳で書式が破損した場合に限り、別のLM Studioモデルへ修復を依頼できる。修復モデルは固定ではなく、`--repair-model`でロード済みの任意のLLMを指定できる（LFM2.5など）。省略すると従来のPLaMo単独動作となる。汎用の`lmstudio`・`ollama`エンジンには適用しない。
+
+- PLaMoと修復モデルはLM Studioで**両方とも手動ロード**する。CPU/GPUオフロードの設定はLM Studio側で行う。
+- モデルのロード状態は`/api/v1/models`（旧版は`/api/v0/models`）で確認し、本ツールからロードAPIは呼ばない。
+- 未ロード時は**手動ロードされるまで自動待機**し、手動ロード後に処理を再開する（`--model-load-policy wait`と同じ）。エラー終了の選択は不要。
+- モデルを切り替える場合は`--repair-model`のIDを変更する。修復結果はモデル別に`plamo_cache.json`へ保存する。
+- **翻訳はPLaMoだけ**が担当する。Pythonは両端の書式を自動復元し、複雑な場合のみ補助モデルへ**構文トークンの挿入位置（整数の配列）**を問い合わせる。補助モデルに日本語の文章を生成させず、PythonがPLaMoの日本語本文へ構文を挿入する。書式なしの本文が記号だけ（例：`Config`に対する`%s: %s`）なら修復を依頼せず原文維持とし、過去に保存された記号だけの不正な修復キャッシュも再利用しない。構文・本文の不変条件を検証し、修復は1つのワーカーで翻訳と並行して進める。修復前後の内容と成否を表示し、最後に件数を集計する。
+- LM Studioの**Just in Time Model Loading**は無効にすると、推論要求による自動ロードを防げる。両モデルを手動ロードしたまま運用する。
+
+PowerShellの起動メニュー[4]は**修復モデルID（空欄で無効）**と**詳細設定（通常はN）**の2項目のみを質問する。PLaMoモデルは自動検出し、用語集・文体・接続先・履歴の変更は詳細設定にまとめてある。未ロード時の選択はなく、手動ロードを待機する。
+
+例（モデルIDはLM Studioでロードした実際の識別子へ置き換える）：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --model "plamo-3-translate-0.8b" --repair-model "lfm2.5-1.2b-instruct"
+```
+
+修復モデルが別のLM Studioサーバーにある場合は、`--repair-api-url`で`http://127.0.0.1:1234/v1/chat/completions`とは異なる接続先を指定する。
+
+### 検証コマンド
+
+Pythonのライブラリは必ず仮想環境へインストールする。既存の`venv`があれば流用可能。
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install deep-translator requests python-dotenv
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+```
 
 ### 手順 3: フォルダの指定
 
