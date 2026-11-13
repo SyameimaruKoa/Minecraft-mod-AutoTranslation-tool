@@ -175,6 +175,57 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
             "§c日本%s語§r"
         )
 
+    def test_reordered_printf_offsets_use_explicit_argument_indices(self):
+        japanese = "対象の種類のスロットが個追加されました"
+        tokens = ["%d", "%s", "%s"]
+        offsets = [
+            japanese.index("個"),
+            japanese.index("種類"),
+            0
+        ]
+        self.assertIsNone(apply_syntax_offsets(japanese, tokens, offsets))
+        repaired = apply_syntax_offsets(
+            japanese, tokens, offsets, allow_reordering=True
+        )
+        self.assertEqual(
+            repaired,
+            "%3$s対象の%2$s種類のスロットが%1$d個追加されました"
+        )
+        from plamo_repair import _format_matches
+        self.assertTrue(_format_matches(
+            "%d slots of type %s have been added to %s", repaired
+        ))
+        self.assertIsNone(apply_syntax_offsets(
+            japanese, ["§c", "%d", "§r"], [3, 2, 4], allow_reordering=True
+        ))
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="lfm")
+    @patch("plamo_repair.requests.post")
+    def test_secondary_repair_accepts_valid_reordered_printf_offsets(self, post, require):
+        source = "%d slots of type %s have been added to %s"
+        japanese = "対象の種類のスロットが個追加されました"
+        offsets = [japanese.index("個"), japanese.index("種類"), 0]
+        post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "choices": [{
+                    "message": {
+                        "content": json.dumps({"offsets": offsets})
+                    }
+                }]
+            })
+        )
+        result = repair_plamo_translation(
+            source, japanese, "lfm2.5", "http://localhost:1234/v1/chat/completions"
+        )
+        self.assertEqual(
+            result, "%3$s対象の%2$s種類のスロットが%1$d個追加されました"
+        )
+        self.assertEqual(post.call_count, 1)
+        self.assertIn(
+            "in any order", post.call_args.kwargs["json"]["messages"][0]["content"]
+        )
+
     @patch("plamo_repair.require_loaded_lm_studio_model")
     @patch("plamo_repair.requests.post")
     def test_punctuation_only_output_is_never_sent_to_lfm(self, post, require):

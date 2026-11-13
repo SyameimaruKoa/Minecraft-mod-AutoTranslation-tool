@@ -13,7 +13,7 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
-from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
+from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation, format_tokens_preserved, restore_ordered_format_markers
 from deep_translator import GoogleTranslator
 
 # --- 定数設定 ---
@@ -808,20 +808,12 @@ def mask_plamo_format_tokens(source, ignored=()):
 
 
 def plamo_format_is_preserved(source, translated):
-    """番号付き引数の順序変更は許し、番号なし引数の順序を厳密に保つ。"""
-    expected = PLAMO_FORMAT_PATTERN.findall(source)
-    actual = PLAMO_FORMAT_PATTERN.findall(translated)
-    numbered = lambda tokens: sorted(t for t in tokens if re.match(r"%\d+\$", t))
-    unnumbered = lambda tokens: [t for t in tokens if t.startswith("%") and not re.match(r"%\d+\$", t)]
-    others = lambda tokens: sorted(t for t in tokens if not t.startswith("%"))
+    """元の引数番号と書式を維持し、日本語の語順変更に伴う位置指定形式を許す。"""
     return (
-        numbered(expected) == numbered(actual)
-        and unnumbered(expected) == unnumbered(actual)
-        and others(expected) == others(actual)
+        format_tokens_preserved(source, translated, PLAMO_FORMAT_PATTERN)
         and source.count("\n") == translated.count("\n")
         and source.count("\\n") == translated.count("\\n")
     )
-
 
 def mask_plamo_linebreaks(source):
     markers = []
@@ -893,8 +885,9 @@ def translate_plamo_multiline_glossary(
     if positions != sorted(positions):
         return None
 
-    for marker, original in protected:
+    for marker, original in style_markers + line_markers:
         result = result.replace(marker, original)
+    result = restore_ordered_format_markers(result, format_markers)
     if plamo_format_is_preserved(source, result):
         return result
     return None
@@ -1281,11 +1274,12 @@ def translate_with_plamo(
                             if any(result.count(marker) != 1 for marker, _ in protected):
                                 print("警告: プレースホルダーの欠落または重複により原文維持")
                                 break
-                            for marker, original_token in protected:
+                            for marker, original_token in style_markers:
                                 result = result.replace(marker, original_token)
+                            result = restore_ordered_format_markers(result, format_markers)
                             result += trailing_format
                             if not plamo_format_is_preserved(part, result):
-                                print("警告: 装飾コードを復元できないため原文維持")
+                                print("警告: 書式指定子の引数対応を復元できないため原文維持")
                                 break
                             part_result = result
                             break
