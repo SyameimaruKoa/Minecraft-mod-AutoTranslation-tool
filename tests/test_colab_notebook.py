@@ -63,7 +63,7 @@ class ColabNotebookTests(unittest.TestCase):
         configuration = self.code_cells[0]
         restore = self.code_cells[2]
         self.assertIn('DRIVE_FOLDER_NAME = ".colab-secret"', configuration)
-        self.assertIn('"MyDrive"', restore)
+        self.assertIn('"/content/drive/MyDrive"', restore)
         self.assertIn('CONFIG_DRIVE_FOLDER / "lmstudio"', restore)
         self.assertIn('if USE_GOOGLE_DRIVE:', restore)
         self.assertIn('if not USE_GOOGLE_DRIVE:', restore)
