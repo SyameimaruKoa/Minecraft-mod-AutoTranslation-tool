@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def translate_parallel_batches(text_dict, workers, batch_size, translator, label):
+def translate_parallel_batches(text_dict, workers, batch_size, translator, label, on_progress=None):
     if workers < 1:
         raise ValueError("並列数は1以上を指定してください")
     if batch_size < 1:
@@ -31,10 +31,17 @@ def translate_parallel_batches(text_dict, workers, batch_size, translator, label
             })
             completed += len(batch)
             remaining = int((time.monotonic() - start) / completed * (len(keys) - completed))
+            if on_progress:
+                on_progress(completed, len(keys))
+            estimate = (
+                f"{remaining}秒" if remaining < 60
+                else f"{remaining // 60}分{remaining % 60}秒"
+            )
+            percent = completed / len(keys) * 100
             print(
-                f"  並列進捗[{label}]: {completed}/{len(keys)} "
-                f"- 残り予想: {remaining // 60}分{remaining % 60}秒 "
-                f"- 同時実行: {min(workers, len(batches))}"
+                f"  進捗: {completed}/{len(keys)} ({percent:.1f}%) "
+                f"- 残り予想: {estimate} - 並列: {min(workers, len(batches))} "
+                f"- 使用中: {label}"
             )
     return {key: results[key] for key in keys if key in results}
 
