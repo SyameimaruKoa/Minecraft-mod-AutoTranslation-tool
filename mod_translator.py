@@ -930,13 +930,64 @@ def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
     history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
-    model_load_policy="wait", on_repair_translation=None
+    model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
     unique_texts = {}
     for key, source in text_dict.items():
         unique_texts.setdefault(source, []).append(key)
+
+    if workers < 1:
+        raise ValueError("並列数は1以上を指定してください")
+    if workers > 1 and len(unique_texts) > 1:
+        group_items = list(unique_texts.items())
+        chunk_size = max(1, min(16, math.ceil(len(group_items) / (workers * 2))))
+        groups = {
+            keys[0]: {"source": source, "keys": keys}
+            for source, keys in group_items
+        }
+        callback_lock = threading.RLock()
+
+        def synchronized_callback(callback):
+            if callback is None:
+                return None
+
+            def execute(key, source, translated):
+                with callback_lock:
+                    callback(key, source, translated)
+            return execute
+
+        saved_callback = synchronized_callback(on_translation)
+        saved_repair_callback = synchronized_callback(on_repair_translation)
+
+        def translate_group(batch):
+            texts = {
+                key: group["source"]
+                for group in batch.values() for key in group["keys"]
+            }
+            translated = translate_with_plamo(
+                texts, model_name, api_url, form,
+                glossary=glossary, context=context, context_fn=context_fn,
+                history_size=history_size, on_translation=saved_callback,
+                history_refresh=history_refresh, repair_model=repair_model,
+                repair_api_url=repair_api_url, model_load_policy=model_load_policy,
+                on_repair_translation=saved_repair_callback,
+                workers=1, show_progress=False
+            )
+            return {
+                canonical: translated[canonical]
+                for canonical in batch if canonical in translated
+            }
+
+        complete_groups = translate_parallel_batches(
+            groups, workers, chunk_size, translate_group, "PLaMo"
+        )
+        return {
+            key: complete_groups[unique_texts[source][0]]
+            for key, source in text_dict.items()
+            if unique_texts[source][0] in complete_groups
+        }
 
     total = len(unique_texts)
     start_time = time.time()
@@ -1166,7 +1217,8 @@ def translate_with_plamo(
             collect_completed_repairs()
             elapsed = time.time() - start_time
             eta = format_time(elapsed / processed * (total - processed))
-            print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
+            if show_progress:
+                print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
 
         if repair_stats["submitted"]:
             print(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
@@ -1185,8 +1237,18 @@ def translate_with_plamo(
     return translated_results
 
 
-def translate_local_llm(text_dict, engine, model_name):
+def translate_local_llm(text_dict, engine, model_name, workers=1, show_progress=True):
     BATCH_SIZE = 20
+    if workers < 1:
+        raise ValueError("並列数は1以上を指定してください")
+    if workers > 1 and len(text_dict) > 1:
+        return translate_parallel_batches(
+            text_dict, workers, BATCH_SIZE,
+            lambda batch: translate_local_llm(
+                batch, engine, model_name, workers=1, show_progress=False
+            ),
+            engine.upper()
+        )
     url = OLLAMA_API_URL if engine == "ollama" else LMSTUDIO_API_URL
 
     translated_results = {}
@@ -1245,7 +1307,8 @@ def translate_local_llm(text_dict, engine, model_name):
             avg = elapsed_time / processed
             rem = total - processed
             eta = format_time(rem * avg)
-            print(f"  進捗: {processed}/{total} - 残り予想: {eta}")
+            if show_progress:
+                print(f"  進捗: {processed}/{total} - 残り予想: {eta}")
 
     return translated_results
 
@@ -1260,6 +1323,9 @@ class ModTranslator:
         self.engine = args.engine
         self.api_key = args.key
         self.model_name = args.model
+        self.workers = getattr(args, "workers", 1)
+        if self.workers < 1:
+            raise ValueError("並列数は1以上を指定してください")
         self.plamo_api_url = args.plamo_api_url
         self.plamo_form = args.plamo_form
         self.plamo_history = args.plamo_history
@@ -1442,6 +1508,7 @@ class ModTranslator:
                             ),
                             repair_model=self.repair_model,
                             repair_api_url=self.repair_api_url,
+                            workers=self.workers,
                             model_load_policy=self.model_load_policy,
                             on_repair_translation=lambda key, src, dst: self.save_plamo_repair_translation(
                                 filename, lang_path, key, src, dst
@@ -1488,7 +1555,7 @@ class ModTranslator:
 
                     elif self.engine == "gemini":
                         new_translations_raw = translate_with_gemini(
-                            to_translate, self.api_key, self.selector
+                            to_translate, self.api_key, self.selector, workers=self.workers
                         )
 
                         for k, v in new_translations_raw.items():
@@ -1498,7 +1565,7 @@ class ModTranslator:
 
                     elif self.engine in ["ollama", "lmstudio"]:
                         new_translations_raw = translate_local_llm(
-                            to_translate, self.engine, self.model_name
+                            to_translate, self.engine, self.model_name, workers=self.workers
                         )
                         for k, v in new_translations_raw.items():
                             original_text = content.get(k)
@@ -1598,8 +1665,11 @@ if __name__ == "__main__":
     parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
+    parser.add_argument("--workers", type=int, default=2, help="LLMエンジンの同時実行数（既定2、1で逐次翻訳）")
 
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers は1以上を指定してください")
     if args.plamo_history < 0 or args.plamo_history > 10:
         parser.error("--plamo-history は0〜10を指定してください")
     if args.plamo_history_refresh < 1:
