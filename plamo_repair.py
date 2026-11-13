@@ -5,7 +5,7 @@ import re
 
 
 FORMAT_PATTERN = re.compile(
-    r"§[0-9a-fk-orA-FK-OR]|(?<!\d)%(?:\d+\$)?(?:[-+#0,(]*\d*(?:\.\d+)?[a-zA-Z%]| \d*(?:\.\d+)?[dfeEgGaA](?![A-Za-z]))|\{[\w.:-]+\}|<[A-Za-z_][\w.:-]*>"
+    r"§[0-9a-fk-orA-FK-OR]|(?<!\d)%(?:\d+\$)?(?:[-+#0,(]*\d*(?:\.\d+)?[a-zA-Z%]| \d*(?:\.\d+)?[dfeEgGaA](?![A-Za-z]))|\{[\w.:-]+\}|<[A-Za-z_][A-Za-z0-9_.:-]*>"
 )
 SYNTAX_PATTERN = re.compile(FORMAT_PATTERN.pattern + r"|\r\n|\r|\n|\\n")
 
