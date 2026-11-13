@@ -39,12 +39,42 @@ class PlamoTranslationTests(unittest.TestCase):
         get.assert_called_once_with("http://127.0.0.1:1234/v1/models", timeout=10)
 
     @patch("mod_translator.requests.get")
-    def test_multiple_plamo_models_need_explicit_choice(self, get):
+    def test_multiple_plamo_models_select_larger_size(self, get):
         get.return_value.json.return_value = {
-            "data": [{"id": "plamo-3-translate-2b"}, {"id": "plamo-3-translate-8b"}]
+            "data": [
+                {"id": "plamo-3-translate-0.8b"},
+                {"id": "plamo-3-translate-2b"},
+                {"id": "plamo-3-translate-8b"},
+                {"id": "plamo-3-translate-31b"}
+            ]
         }
-        with self.assertRaisesRegex(RuntimeError, "--model"):
-            resolve_plamo_model("http://127.0.0.1:1234/v1/completions")
+        self.assertEqual(
+            resolve_plamo_model("http://127.0.0.1:1234/v1/completions"),
+            "plamo-3-translate-31b"
+        )
+
+    @patch("mod_translator.requests.get")
+    def test_multiple_loaded_plamo_models_choose_larger_loaded_size(self, get):
+        listed = Mock()
+        listed.json.return_value = {
+            "data": [
+                {"id": "plamo-3-translate-31b"},
+                {"id": "plamo-3-translate-2b"},
+                {"id": "plamo-3-translate-8b"}
+            ]
+        }
+        states = Mock()
+        states.json.return_value = {
+            "data": [
+                {"id": "plamo-3-translate-2b", "state": "loaded"},
+                {"id": "plamo-3-translate-8b", "state": "loaded"}
+            ]
+        }
+        get.side_effect = [listed, states]
+        self.assertEqual(
+            resolve_plamo_model("http://127.0.0.1:1234/v1/completions"),
+            "plamo-3-translate-8b"
+        )
 
     @patch("mod_translator.requests.get")
     def test_no_plamo_model_does_not_select_other_model(self, get):
