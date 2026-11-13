@@ -1,5 +1,8 @@
 import ast
 import json
+import os
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,16 +35,53 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn('"lms", "get"', code)
         self.assertNotIn('subprocess.DEVNULL)', code)
 
-    def test_auth_vault_encrypts_before_saving_to_drive(self):
+    def test_auth_state_is_copied_directly_without_extra_passwords(self):
         code = self.code_cells[2]
-        self.assertIn('AESGCM(vault_key(salt)).encrypt(', code)
-        self.assertIn('AESGCM(vault_key(salt)).decrypt(', code)
-        self.assertIn('LM_LINK_VAULT_PASSWORD', code)
-        self.assertIn('getpass.getpass(', code)
         self.assertIn('AUTH_DIRS = ("credentials", "hub")', code)
-        self.assertIn('VAULT.with_suffix(".tmp")', code)
-        self.assertIn('os.replace(temp_path, VAULT)', code)
-        self.assertNotIn('print(vault_password)', code)
+        self.assertIn('shutil.copy2(original, target)', code)
+        self.assertIn('auth_restored = restore_login()', code)
+        self.assertNotIn("AESGCM", code)
+        self.assertNotIn("getpass", code)
+        self.assertNotIn("LM_LINK_VAULT_PASSWORD", code)
+        self.assertNotIn(".internal", code)
+
+    def test_auth_state_backup_and_restore_without_reauthentication(self):
+        code = self.code_cells[2]
+        defs = [
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in ("copy_login_files", "restore_login", "backup_login")
+        ]
+        namespace = {"os": os, "shutil": shutil, "AUTH_DIRS": ("credentials", "hub")}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            live = root / "runtime"
+            saved = root / "drive" / ".colab-secret" / "lmstudio"
+            (live / "credentials").mkdir(parents=True)
+            (live / "hub").mkdir()
+            (live / "credentials" / "lmstudio-hub.json").write_bytes(b"dummy-credentials")
+            (live / "hub" / "session.json").write_bytes(b"dummy-session")
+            namespace.update(
+                LM_HOME=live, DRIVE_AUTH_DIR=saved, USE_GOOGLE_DRIVE=True
+            )
+            exec(compile(ast.Module(body=defs, type_ignores=[]), "<notebook>", "exec"), namespace)
+            namespace["backup_login"]()
+            self.assertEqual(
+                (saved / "credentials" / "lmstudio-hub.json").read_bytes(),
+                b"dummy-credentials"
+            )
+            shutil.rmtree(live)
+            self.assertTrue(namespace["restore_login"]())
+            self.assertEqual(
+                (live / "credentials" / "lmstudio-hub.json").read_bytes(),
+                b"dummy-credentials"
+            )
+            self.assertEqual(
+                (live / "hub" / "session.json").read_bytes(), b"dummy-session"
+            )
+            namespace["USE_GOOGLE_DRIVE"] = False
+            self.assertFalse(namespace["restore_login"]())
+            namespace["backup_login"]()
 
     def test_login_restore_order_and_no_committed_outputs(self):
         configuration, startup, restore, login, model = self.code_cells
