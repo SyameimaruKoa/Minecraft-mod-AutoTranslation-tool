@@ -22,6 +22,9 @@
     [オプション] 出力するリソースパックのパス（フォルダ名）。
     デフォルトは "Output_Pack"。
 
+.PARAMETER Workers
+    [オプション] Gemini、Ollama、LM Studio、PLaMoの同時翻訳数。既定2、1で逐次実行。
+
 .EXAMPLE
     .\start.ps1
     対話モードで起動する。基本はこれじゃ。
@@ -34,6 +37,10 @@
     .\start.ps1 -InputPath "C:\Games\Minecraft\mods" -OutputPath "MyJpPack"
     引数を指定して起動することも可能じゃ。
 
+.EXAMPLE
+    .\start.ps1 -Workers 4
+    LLMを最大4並列で翻訳する（Geminiはレート制限に合わせて送信間隔を調整）。
+
 .NOTES
     Author: Wise Wolf
     Version: 3.17 (Gemma-Only Mode Integration)
@@ -41,7 +48,9 @@
 
 param (
     [string]$InputPath = "",
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+    [ValidateRange(1, 16)]
+    [int]$Workers = 2
 )
 
 #region ヘルプ表示処理
@@ -291,6 +300,10 @@ switch ($engine_choice) {
         Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
         $args_list += "--engine", "google"
     }
+}
+if ($engine_choice -in @("2", "3", "4")) {
+    $args_list += "--workers", "$Workers"
+    Write-Log "LLM並列数: $Workers" "Cyan"
 }
 #endregion
 

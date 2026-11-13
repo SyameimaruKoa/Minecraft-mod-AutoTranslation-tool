@@ -205,6 +205,26 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
   - APIサーバーの接続先変更は`--plamo-api-url`、モデルIDの直接指定は`--model`を使用する。キャッシュにある文章を翻訳し直す場合は`--force`を併用する。
   - 公式モデルの0.8B・2B・8B・31B（GGUF対応）から適切なサイズを選べる。モデルの詳細は[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
 
+### LLM翻訳の並列処理
+
+**Gemini・Ollama・LM Studio・PLaMo**で翻訳リクエストを複数同時に実行できる。Google Translateは対象外じゃ。
+
+- CLI: `--workers 2`（既定）、`--workers 1`で逐次実行。並列数は1以上を指定する。
+- PowerShell: `.\start.ps1 -Workers 4`（既定は2）。対話メニューに質問は追加しない。
+- Gemini: 既存のモデル優先順位・エラー時の切替・欠落項目の再試行を維持する。並列ワーカー間でモデル切替を同期し、モデル別のAPI送信間隔を共有するため、指定数を増やしてもレート制限を超えて連投しない。
+- Ollama / LM Studio: 最大20件のJSONバッチを複数実行する。少数の項目も並列数に合わせて分割する。
+- PLaMo: 原文の重複排除、書式保護、修復モデル、1件ごとのキャッシュ保存を維持する。対訳履歴は並列グループ内の順序を使うため、グループをまたぐ直前の対訳は共有しない。
+- 並列タスクの完了順に依存せず、返す翻訳結果は入力キーの順序で整列する。PLaMoのキャッシュ書き込みはロックで直列化する。
+
+例：
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --workers 4
+.\start.ps1 -Workers 4
+```
+
+ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
+
 ### PLaMo 3 Translateの翻訳品質を高める設定
 
 PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。
