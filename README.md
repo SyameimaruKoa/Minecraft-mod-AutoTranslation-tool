@@ -234,7 +234,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 - 以前の`MyDrive/.colab-secret/lmstudio/credentials`の形式からも復元可能。
 - 初回のみLM Studioのブラウザログイン。`lms whoami`が成功したのに認証ファイルを見つけられない場合は警告を出して処理を続ける。その場合、次回起動時の自動ログイン復元は保証されない。
 - モデル本体やLM Studioのログはバックアップ対象外。認証情報はGoogleドライブへ追加暗号化なしで保存する。
-- モデル取得はpfnet公式GGUFのみで、既定は**8B／Q4_K_M**。公式配布の量子化形式以外は拒否し、途中再開対応でダウンロードする。
+- モデル取得はpfnet公式GGUFのみで、既定は**8B／Q4_K_M**。公式配布の量子化形式以外は拒否し、途中再開対応でダウンロードする。**Colab上ではリアルタイムの進捗バーで取得済み容量・総容量・速度・残り時間を表示**する。公式サーバーの容量が取得できない場合でも取得済み容量と速度を表示する。
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
