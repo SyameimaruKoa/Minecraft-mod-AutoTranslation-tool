@@ -162,8 +162,9 @@ class ParallelTranslationTests(unittest.TestCase):
 
         def respond(url, json, timeout):
             barrier.wait()
+            draft = "石" if "Stone" in json["prompt"] else "草"
             return Mock(status_code=200, json=Mock(return_value={
-                "choices": [{"text": "訳", "finish_reason": "stop"}]
+                "choices": [{"text": draft, "finish_reason": "stop"}]
             }))
 
         def repaired(source, draft, *args):
