@@ -11,7 +11,7 @@ import threading
 import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
-from translation_parallel import translate_parallel_batches, SynchronizedModelSelector, SharedRequestPacer
+from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
 from deep_translator import GoogleTranslator
 
@@ -927,12 +927,30 @@ def resolve_plamo_model(api_url):
     )
 
 
+def parse_plamo_model_ids(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        models = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        models = list(value)
+    else:
+        raise ValueError("翻訳モデルIDはカンマ区切りの文字列で指定してください")
+    if any(not isinstance(model, str) or not model.strip() for model in models):
+        raise ValueError("翻訳モデルIDには空欄を含められません")
+    models = [model.strip() for model in models]
+    if len(models) != len(set(models)):
+        raise ValueError("翻訳モデルIDは重複しないように指定してください")
+    return models
+
+
 def translate_with_plamo(
     text_dict, model_name=None, api_url=PLAMO_API_URL, form="plain",
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
     history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
     model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
-    repair_log=None, repair_stats_report=None
+    repair_log=None, repair_stats_report=None, model_names=None,
+    on_model_translation=None, on_model_repair_translation=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -942,7 +960,21 @@ def translate_with_plamo(
 
     if workers < 1:
         raise ValueError("並列数は1以上を指定してください")
-    if workers > 1 and len(unique_texts) > 1:
+    translation_models = parse_plamo_model_ids(model_names)
+    if translation_models and model_name and model_name not in translation_models:
+        raise ValueError("指定した--modelが--plamo-modelsの一覧に含まれていません")
+    if not translation_models:
+        translation_models = [model_name or resolve_plamo_model(api_url)]
+    if len(translation_models) > 1:
+        loaded_models = [
+            require_loaded_lm_studio_model(model, api_url, model_load_policy)
+            for model in translation_models
+        ]
+        if len(set(loaded_models)) != len(loaded_models):
+            raise ValueError("複数の翻訳モデルIDが同じロード済みインスタンスを参照しています")
+        translation_models = loaded_models
+
+    if (workers > 1 or len(translation_models) > 1) and len(unique_texts) > 1:
         group_items = list(unique_texts.items())
         chunk_size = max(1, min(16, math.ceil(len(group_items) / (workers * 2))))
         if show_progress and len(text_dict) != len(unique_texts):
@@ -992,21 +1024,23 @@ def translate_with_plamo(
             if callback is None:
                 return None
 
-            def execute(key, source, translated):
+            def execute(*args):
                 with callback_lock:
-                    callback(key, source, translated)
+                    callback(*args)
             return execute
 
         saved_callback = synchronized_callback(on_translation)
         saved_repair_callback = synchronized_callback(on_repair_translation)
+        saved_model_callback = synchronized_callback(on_model_translation)
+        saved_model_repair_callback = synchronized_callback(on_model_repair_translation)
 
-        def translate_group(batch):
+        def translate_group(batch, selected_model):
             texts = {
                 key: group["source"]
                 for group in batch.values() for key in group["keys"]
             }
             translated = translate_with_plamo(
-                texts, model_name, api_url, form,
+                texts, selected_model, api_url, form,
                 glossary=glossary, context=context, context_fn=context_fn,
                 history_size=history_size, on_translation=saved_callback,
                 history_refresh=history_refresh, repair_model=repair_model,
@@ -1014,16 +1048,18 @@ def translate_with_plamo(
                 on_repair_translation=saved_repair_callback,
                 workers=1, show_progress=False,
                 repair_log=capture_repair_log,
-                repair_stats_report=record_group_stats
+                repair_stats_report=record_group_stats,
+                on_model_translation=saved_model_callback,
+                on_model_repair_translation=saved_model_repair_callback
             )
             return {
                 canonical: translated[canonical]
                 for canonical in batch if canonical in translated
             }
 
-        complete_groups = translate_parallel_batches(
-            groups, workers, chunk_size, translate_group, "PLaMo",
-            on_progress=flush_repair_log
+        complete_groups = translate_model_pool_batches(
+            groups, workers, chunk_size, translate_group,
+            translation_models, "PLaMo", on_progress=flush_repair_log
         )
         flush_repair_log()
         if repair_model and show_progress:
@@ -1040,7 +1076,7 @@ def translate_with_plamo(
 
     total = len(unique_texts)
     start_time = time.time()
-    model = model_name or resolve_plamo_model(api_url)
+    model = translation_models[0]
     history = []
     stable_history = []
     history_since_refresh = 0
@@ -1088,6 +1124,8 @@ def translate_with_plamo(
                     callback = on_repair_translation or on_translation
                     if callback:
                         callback(key, original, repaired)
+                    if on_model_repair_translation:
+                        on_model_repair_translation(key, original, repaired, model)
                 repair_stats["succeeded"] += 1
                 emit_repair_log(
                     f"  修復[{repair_stats['succeeded']}件成功] {model} → {repair_model}\n"
@@ -1265,6 +1303,8 @@ def translate_with_plamo(
                     translated_results[current_key] = translated_value
                     if on_translation:
                         on_translation(current_key, source, translated_value)
+                    if on_model_translation:
+                        on_model_translation(current_key, source, translated_value, model)
                 if history_size > 0 and len(source) < 300 and len(translated_value) < 300:
                     history.append((
                         PLAMO_STYLE_PATTERN.sub("", source).strip(),
