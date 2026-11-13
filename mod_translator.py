@@ -12,6 +12,7 @@ import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
+from lmlink_devices import discover_plamo_models, parse_excluded_devices
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
 from deep_translator import GoogleTranslator
 
@@ -1428,6 +1429,8 @@ class ModTranslator:
         self.api_key = args.key
         self.model_name = args.model
         self.plamo_models = parse_plamo_model_ids(getattr(args, "plamo_models", None)) if self.engine == "plamo" else []
+        self.exclude_devices = parse_excluded_devices(getattr(args, "exclude_devices", None)) if self.engine == "plamo" else []
+        self.auto_discover_plamo = self.engine == "plamo" and hasattr(args, "exclude_devices")
         self.workers = getattr(args, "workers", 1)
         if self.workers < 1:
             raise ValueError("並列数は1以上を指定してください")
@@ -1473,6 +1476,14 @@ class ModTranslator:
                 exit(1)
 
         if self.engine == "plamo":
+            if self.auto_discover_plamo and not self.plamo_models:
+                self.plamo_models = discover_plamo_models(
+                    self.exclude_devices, model_filter=self.model_name
+                )
+                print(
+                    f"情報: LM Link翻訳対象 {len(self.plamo_models)}モデル: "
+                    f"{', '.join(self.plamo_models)}"
+                )
             if self.plamo_models:
                 if self.model_name and self.model_name not in self.plamo_models:
                     raise ValueError("--modelは--plamo-modelsのモデルIDに含めてください")
@@ -1807,7 +1818,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--key", help="Gemini APIキー")
     parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
-    parser.add_argument("--plamo-models", help="PLaMo専用: LM Studio/LM Linkの複数のロード済みモデルID（カンマ区切り）")
+    parser.add_argument("--plamo-models", help="PLaMo専用: 翻訳モデルIDの明示指定（旧方式・互換性用）")
+    parser.add_argument("--exclude-devices", default=None, help="PLaMo専用: LM Linkで除外するデバイス名またはID（カンマ区切り、未指定ですべて）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
     parser.add_argument("--plamo-glossary", help="PLaMo用語集のJSONファイル（原語と訳語）")
@@ -1826,6 +1838,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
         parser.error("--plamo-models は--engine plamo専用です")
+    if args.exclude_devices and args.engine != "plamo":
+        parser.error("--exclude-devices は--engine plamo専用です")
+    if args.exclude_devices and args.plamo_models:
+        parser.error("--exclude-devices と --plamo-models は同時指定できません")
+    if args.exclude_devices:
+        try:
+            parse_excluded_devices(args.exclude_devices)
+        except ValueError as error:
+            parser.error(str(error))
     if args.plamo_models:
         try:
             parse_plamo_model_ids(args.plamo_models)
