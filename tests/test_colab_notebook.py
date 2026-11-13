@@ -42,7 +42,7 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn('"lms", "load"', code)
         self.assertNotIn('"lms", "get"', code)
         self.assertIn("stdin=subprocess.DEVNULL", code)
-        self.assertIn('run_lms_step("PLaMoのロード"', code)
+        self.assertIn('"PLaMoのロード", [', code)
 
     def test_download_progress_tracks_resumed_file_size(self):
         source = self.code_cells[-1]
