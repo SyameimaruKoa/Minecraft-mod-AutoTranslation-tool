@@ -94,7 +94,7 @@ class ParallelTranslationTests(unittest.TestCase):
 
         def respond(url, json, timeout):
             barrier.wait()
-            input_text = json["prompt"].rsplit("<|plamo:msg|>", 1)[-1]
+            input_text = json["prompt"].rsplit("<|plamo:tag|>input", 1)[-1].split("<|plamo:msg|>", 1)[1].split("<|plamo:tag|>output", 1)[0]
             return Mock(status_code=200, json=Mock(return_value={
                 "choices": [{"text": f"訳{input_text}", "finish_reason": "stop"}]
             }))
