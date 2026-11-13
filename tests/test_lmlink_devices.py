@@ -45,6 +45,23 @@ class LMDeviceExclusionTests(unittest.TestCase):
             )
         cli.assert_called_once_with("ps")
 
+    def test_larger_loaded_models_have_higher_priority(self):
+        shuffled = [
+            {"modelKey": "pfnet/plamo-3-translate-0.8b",
+             "identifier": "small", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "large", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "medium", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-31b",
+             "identifier": "largest", "deviceIdentifier": None},
+        ]
+        with patch("lmlink_devices._lms_json", return_value=shuffled):
+            self.assertEqual(
+                discover_plamo_models(),
+                ["largest", "large", "medium", "small"]
+            )
+
     def test_exclude_by_device_id_or_name(self):
         with patch("lmlink_devices._lms_json", side_effect=[MODELS, LINK]):
             self.assertEqual(
