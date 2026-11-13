@@ -225,6 +225,20 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
 
+### LM Linkの複数デバイスでPLaMoを分散翻訳
+
+PLaMoの詳細設定にある「翻訳モデルID」へ、**LM Studioのロード済みモデルIDをカンマ区切り**で指定できる。空欄なら従来の自動検出、1個なら従来の単一モデル実行じゃ。複数指定時はロード済みインスタンスが実際に異なることを確認し、並列ワーカーに振り分ける。
+
+例：詳細設定で `plamo-local,plamo-linked` を指定。CLIなら次のとおり。
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-models "plamo-local,plamo-linked" --workers 2
+```
+
+**LM Linkの注意点：** 同じ `plamo-3-translate-8b` というモデル名を2つ並べても、どちらのデバイスを使うかは区別できない。LM StudioのAPIは同名モデルを優先デバイスへ送るため、**実際に区別できるモデルインスタンスIDを2つ指定する必要がある**。各デバイスでモデルをロードする際は、CLIの `lms load <model-key> --identifier "plamo-local"` のように固有の識別子を指定できる。利用可能なIDは `/api/v1/models` の `loaded_instances[].id` で確認する。本ツールは自動ロードしない。
+
+同じIDを2つ指定した場合や、異なるIDが同一インスタンスを指す場合はエラーにする。指定したIDが未ロードなら手動ロードを待機する。実際に異なるデバイスへ送信されるかは各インスタンスの割当てに依存する。モデルを追加しても、以前のモデルと設定が同じならそのモデルで作成済みのキャッシュを再利用する。修復用LFMは翻訳モデルには含めず、従来どおり `--repair-model` で別指定する。
+
 ### PLaMo 3 Translateの翻訳品質を高める設定
 
 PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。
