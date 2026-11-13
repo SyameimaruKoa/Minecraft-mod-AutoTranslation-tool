@@ -1243,7 +1243,7 @@ def translate_local_llm(text_dict, engine, model_name, workers=1, show_progress=
         raise ValueError("並列数は1以上を指定してください")
     if workers > 1 and len(text_dict) > 1:
         return translate_parallel_batches(
-            text_dict, workers, BATCH_SIZE,
+            text_dict, workers, min(BATCH_SIZE, math.ceil(len(text_dict) / workers)),
             lambda batch: translate_local_llm(
                 batch, engine, model_name, workers=1, show_progress=False
             ),
