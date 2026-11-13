@@ -254,9 +254,9 @@ switch ($engine_choice) {
             if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
                 $args_list += "--plamo-api-url", "$plamo_url"
             }
-            $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
-            if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
-                $args_list += "--model", "$plamo_model"
+            $excluded_devices = Read-Host "除外するLM Linkデバイス名またはID（カンマ区切り / Enterですべて使用）"
+            if (-not [string]::IsNullOrWhiteSpace($excluded_devices)) {
+                $args_list += "--exclude-devices", "$excluded_devices"
             }
             $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
             if ($plamo_form -eq "2") {

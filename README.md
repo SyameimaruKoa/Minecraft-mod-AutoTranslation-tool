@@ -225,6 +225,26 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
 
+### LM Linkの複数デバイスでPLaMoを分散翻訳
+
+**既定ではLM Link上でロード済みのPLaMoモデルをすべて使用する。** モデルIDや使用デバイスを指定する必要はない。PLaMoの詳細設定では、**除外するデバイス名またはDevice identifierのみ**をカンマ区切りで指定する。空欄なら除外なしじゃ。
+
+例：`Prestige-13-A13M,21KJ` と入力すると、それらの端末にあるPLaMoモデルを翻訳対象から除く。ローカル端末の除外には `local` または自端末名を指定できる。
+
+```powershell
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --exclude-devices "Prestige-13-A13M,21KJ" --workers 2
+```
+
+除外なしなら `--exclude-devices` 自体を指定しない。PowerShellの詳細設定でもEnterで全端末を利用する。
+
+- `lms ps --json`から現在ロード済みのモデル、モデルインスタンスID、`deviceIdentifier`を読み取り、PLaMo 3 Translateだけを自動抽出する。除外が指定された場合は `lms link status --json` から端末名とIDを照合する。LM StudioのCLIが必要じゃ。
+- 明示された除外端末が見つからない場合、除外後に利用可能なPLaMoがない場合はエラーで停止する。自動ロードしない。
+- **同じモデルインスタンスIDが複数端末に存在する場合、APIから送信先を区別できない可能性があるため停止する。** その場合はLM Studioでインスタンスごとに異なるIDを割り当てる必要がある（例：`lms load <model-key> --identifier plamo-local`）。誤って除外端末へ送信することを防ぐためじゃ。
+- `--model`を指定すると、そのモデル名またはインスタンスIDのみに絞り込める。従来の `--plamo-models` は互換性のため残してあるが、除外指定と同時には使用できない。
+- モデルごとの翻訳キャッシュ、重複文章の統合、構文修復用LFMは従来どおりじゃ。
+
+LM Link自体は、同一モデルの通常のAPI呼び出しを優先デバイスに送る仕様じゃ。そのため本ツールは`lms ps --json`の識別情報を確認し、区別不能なら黙って誤配送せず停止する。実機での複数デバイス配分は別途検証が必要じゃ。
+
 ### PLaMo 3 Translateの翻訳品質を高める設定
 
 PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。

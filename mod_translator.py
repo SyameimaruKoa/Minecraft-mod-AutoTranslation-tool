@@ -11,7 +11,8 @@ import threading
 import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
-from translation_parallel import translate_parallel_batches, SynchronizedModelSelector, SharedRequestPacer
+from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
+from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
 from deep_translator import GoogleTranslator
 
@@ -404,43 +405,63 @@ def detect_pack_format(mod_path):
     return DEFAULT_FORMAT_FALLBACK
 
 
+def language_code_from_path(lang_path):
+    locale = os.path.splitext(os.path.basename(lang_path))[0].lower()
+    if locale in ("zh_cn", "zh_sg"):
+        return "zh-hans"
+    if locale in ("zh_tw", "zh_hk", "zh_mo"):
+        return "zh-hant"
+    return locale.split("_", 1)[0].split("-", 1)[0]
+
+
 def extract_lang_files(mod_path, is_shader_mode=False):
-    extracted = {}
+    selected = {}
     try:
         with zipfile.ZipFile(mod_path, "r") as zf:
-            for file in zf.namelist():
-                if (
-                    not is_shader_mode
-                    and file.endswith("en_us.json")
-                    and "assets" in file
+            for file in sorted(zf.namelist()):
+                basename = file.rsplit("/", 1)[-1]
+                locale, ext = os.path.splitext(basename.lower())
+                if ext not in (".json", ".lang"):
+                    continue
+                if not re.fullmatch(r"[a-z]{2,3}(?:_[a-z0-9]{2,8})?", locale):
+                    continue
+                if language_code_from_path(file) == "ja":
+                    continue
+                if ext == ".json" and (
+                    is_shader_mode or "assets" not in file.split("/")
                 ):
-                    with zf.open(file) as f:
-                        try:
-                            content = json.load(f)
-                            extracted[file] = content
-                        except:
-                            continue
+                    continue
 
-                elif file.endswith(".lang") or (
-                    is_shader_mode and file.endswith("en_US.lang")
-                ):
-                    with zf.open(file) as f:
-                        try:
+                with zf.open(file) as f:
+                    try:
+                        if ext == ".json":
+                            content = json.load(f)
+                            if not isinstance(content, dict):
+                                continue
+                        else:
                             content = {}
-                            for line in (
-                                f.read().decode("utf-8", errors="ignore").splitlines()
-                            ):
+                            for line in f.read().decode("utf-8", errors="ignore").splitlines():
                                 line = line.strip()
                                 if "=" in line and not line.startswith("#"):
                                     k, v = line.split("=", 1)
                                     content[k.strip()] = v.strip()
-                            if content:
-                                extracted[file] = content
-                        except:
-                            continue
+                    except (ValueError, UnicodeError, TypeError):
+                        continue
+                if not content:
+                    continue
+                count = sum(
+                    isinstance(value, str) and key not in IGNORE_KEYS
+                    for key, value in content.items()
+                )
+                if not count:
+                    continue
+                group = file.rpartition("/")[0]
+                score = (count, int(locale == "en" or locale.startswith("en_")), int(ext == ".json"))
+                if group not in selected or score > selected[group][0]:
+                    selected[group] = (score, file, content)
     except Exception as e:
         print(f"エラー: ファイル読み込み失敗 {mod_path}: {e}")
-    return extracted
+    return {file: content for _, file, content in selected.values()}
 
 
 # --- 翻訳エンジン ---
@@ -707,7 +728,7 @@ def relevant_plamo_glossary(source, glossary):
     ]
 
 
-def build_plamo_prompt(source, form="plain", context=None, glossary=None, history=None):
+def build_plamo_prompt(source, form="plain", context=None, glossary=None, history=None, source_lang="en"):
     """公式PFML3のcontext→履歴→glossary→input→outputの順序で構築する。"""
     prompt = "<|plamo:tag|>dataset<|plamo:msg|>translation"
     if context is None:
@@ -716,7 +737,7 @@ def build_plamo_prompt(source, form="plain", context=None, glossary=None, histor
         prompt += "<|plamo:tag|>context<|plamo:msg|>" + context
     for old_source, old_target in history or []:
         prompt += (
-            "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+            f"<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>{source_lang}<|plamo:msg|>"
             + old_source
             + "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
             + old_target
@@ -727,7 +748,7 @@ def build_plamo_prompt(source, form="plain", context=None, glossary=None, histor
             prompt += "<|plamo:index|>" + item["source"] + "<|plamo:item|>" + item["target"]
     return (
         prompt
-        + "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+        + f"<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>{source_lang}<|plamo:msg|>"
         + source
         + "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja"
         + "<|plamo:key|>form<|plamo:val|>" + form + "<|plamo:msg|>"
@@ -817,7 +838,8 @@ def mask_plamo_linebreaks(source):
 
 
 def translate_plamo_multiline_glossary(
-    source, model, api_url, form, context, glossary, history, load_policy=None
+    source, model, api_url, form, context, glossary, history, load_policy=None,
+    source_lang="en"
 ):
     masked, style_markers = mask_minecraft_style_codes(source)
     masked, format_markers = mask_plamo_format_tokens(
@@ -830,7 +852,8 @@ def translate_plamo_multiline_glossary(
     prefix = masked[:len(masked) - len(masked.lstrip())]
     suffix = masked[len(masked.rstrip()):]
     prompt = build_plamo_prompt(
-        masked.strip(), form, context=context, glossary=terms, history=history
+        masked.strip(), form, context=context, glossary=terms, history=history,
+        source_lang=source_lang
     )
     max_tokens = max(512, min(4096, len(masked) // 2 + 128))
     timeout = max(120, min(900, max_tokens * 0.5))
@@ -878,7 +901,7 @@ def translate_plamo_multiline_glossary(
 
 
 def resolve_plamo_model(api_url):
-    """接続先のモデル一覧から PLaMo 3 Translate を特定する。"""
+    """接続先のモデル一覧から、利用可能な最大のPLaMo 3 Translateを選ぶ。"""
     models_url = api_url.rsplit("/", 1)[0] + "/models"
     try:
         response = requests.get(models_url, timeout=10)
@@ -897,14 +920,16 @@ def resolve_plamo_model(api_url):
         and isinstance(item.get("id"), str)
         and "plamo-3-translate" in item["id"].lower()
     ]
-    if len(candidates) == 1:
-        print(f"情報: PLaMo 3 Translateを自動選択: {candidates[0]}")
-        return candidates[0]
     if not candidates:
         raise RuntimeError(
             "PLaMo 3 TranslateがLM Studioのモデル一覧にありません。"
             "モデルをロードするか --model でモデルIDを指定してください。"
         )
+    if len(candidates) == 1:
+        print(f"情報: PLaMo 3 Translateを自動選択: {candidates[0]}")
+        return candidates[0]
+
+    loaded = []
     try:
         native_url = api_url.split("/v1/", 1)[0] + "/api/v0/models"
         native_response = requests.get(native_url, timeout=10)
@@ -915,16 +940,28 @@ def resolve_plamo_model(api_url):
             and item.get("id") in candidates
             and item.get("state") == "loaded"
         ]
-        if len(loaded) == 1:
-            print(f"情報: LM Studioでロード済みのモデルを選択: {loaded[0]}")
-            return loaded[0]
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
-    raise RuntimeError(
-        "PLaMo 3 Translateが複数見つかりました: "
-        + ", ".join(candidates)
-        + "。--model でモデルIDを指定してください。"
-    )
+    chosen = max(loaded or candidates, key=plamo_model_priority)
+    print(f"情報: PLaMo 3 Translateをサイズ優先で自動選択: {chosen}")
+    return chosen
+
+
+def parse_plamo_model_ids(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        models = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        models = list(value)
+    else:
+        raise ValueError("翻訳モデルIDはカンマ区切りの文字列で指定してください")
+    if any(not isinstance(model, str) or not model.strip() for model in models):
+        raise ValueError("翻訳モデルIDには空欄を含められません")
+    models = [model.strip() for model in models]
+    if len(models) != len(set(models)):
+        raise ValueError("翻訳モデルIDは重複しないように指定してください")
+    return models
 
 
 def translate_with_plamo(
@@ -932,7 +969,9 @@ def translate_with_plamo(
     glossary=None, context=None, context_fn=None, history_size=3, on_translation=None,
     history_refresh=16, repair_model=None, repair_api_url=LMSTUDIO_API_URL,
     model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
-    repair_log=None, repair_stats_report=None
+    repair_log=None, repair_stats_report=None, model_names=None,
+    on_model_translation=None, on_model_repair_translation=None,
+    source_lang="en"
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -942,7 +981,21 @@ def translate_with_plamo(
 
     if workers < 1:
         raise ValueError("並列数は1以上を指定してください")
-    if workers > 1 and len(unique_texts) > 1:
+    translation_models = parse_plamo_model_ids(model_names)
+    if translation_models and model_name and model_name not in translation_models:
+        raise ValueError("指定した--modelが--plamo-modelsの一覧に含まれていません")
+    if not translation_models:
+        translation_models = [model_name or resolve_plamo_model(api_url)]
+    if len(translation_models) > 1:
+        loaded_models = [
+            require_loaded_lm_studio_model(model, api_url, model_load_policy)
+            for model in translation_models
+        ]
+        if len(set(loaded_models)) != len(loaded_models):
+            raise ValueError("複数の翻訳モデルIDが同じロード済みインスタンスを参照しています")
+        translation_models = loaded_models
+
+    if (workers > 1 or len(translation_models) > 1) and len(unique_texts) > 1:
         group_items = list(unique_texts.items())
         chunk_size = max(1, min(16, math.ceil(len(group_items) / (workers * 2))))
         if show_progress and len(text_dict) != len(unique_texts):
@@ -992,21 +1045,23 @@ def translate_with_plamo(
             if callback is None:
                 return None
 
-            def execute(key, source, translated):
+            def execute(*args):
                 with callback_lock:
-                    callback(key, source, translated)
+                    callback(*args)
             return execute
 
         saved_callback = synchronized_callback(on_translation)
         saved_repair_callback = synchronized_callback(on_repair_translation)
+        saved_model_callback = synchronized_callback(on_model_translation)
+        saved_model_repair_callback = synchronized_callback(on_model_repair_translation)
 
-        def translate_group(batch):
+        def translate_group(batch, selected_model):
             texts = {
                 key: group["source"]
                 for group in batch.values() for key in group["keys"]
             }
             translated = translate_with_plamo(
-                texts, model_name, api_url, form,
+                texts, selected_model, api_url, form,
                 glossary=glossary, context=context, context_fn=context_fn,
                 history_size=history_size, on_translation=saved_callback,
                 history_refresh=history_refresh, repair_model=repair_model,
@@ -1014,16 +1069,19 @@ def translate_with_plamo(
                 on_repair_translation=saved_repair_callback,
                 workers=1, show_progress=False,
                 repair_log=capture_repair_log,
-                repair_stats_report=record_group_stats
+                repair_stats_report=record_group_stats,
+                on_model_translation=saved_model_callback,
+                on_model_repair_translation=saved_model_repair_callback,
+                source_lang=source_lang
             )
             return {
                 canonical: translated[canonical]
                 for canonical in batch if canonical in translated
             }
 
-        complete_groups = translate_parallel_batches(
-            groups, workers, chunk_size, translate_group, "PLaMo",
-            on_progress=flush_repair_log
+        complete_groups = translate_model_pool_batches(
+            groups, workers, chunk_size, translate_group,
+            translation_models, "PLaMo", on_progress=flush_repair_log
         )
         flush_repair_log()
         if repair_model and show_progress:
@@ -1040,7 +1098,7 @@ def translate_with_plamo(
 
     total = len(unique_texts)
     start_time = time.time()
-    model = model_name or resolve_plamo_model(api_url)
+    model = translation_models[0]
     history = []
     stable_history = []
     history_since_refresh = 0
@@ -1088,6 +1146,8 @@ def translate_with_plamo(
                     callback = on_repair_translation or on_translation
                     if callback:
                         callback(key, original, repaired)
+                    if on_model_repair_translation:
+                        on_model_repair_translation(key, original, repaired, model)
                 repair_stats["succeeded"] += 1
                 emit_repair_log(
                     f"  修復[{repair_stats['succeeded']}件成功] {model} → {repair_model}\n"
@@ -1143,7 +1203,8 @@ def translate_with_plamo(
                 translated_value = translate_plamo_multiline_glossary(
                     source, model, api_url, form, entry_context, glossary,
                     stable_history if history_size > 0 else [],
-                    model_load_policy if repair_model else None
+                    model_load_policy if repair_model else None,
+                    source_lang=source_lang
                 )
                 if translated_value is None:
                     print("情報: 改行を含む全文の保護に失敗したため、改行単位で翻訳します")
@@ -1171,7 +1232,8 @@ def translate_with_plamo(
                             relevant_plamo_glossary(masked_source, glossary)
                             + [{"source": marker, "target": marker} for marker, _ in protected]
                         ),
-                        history=stable_history if history_size > 0 else []
+                        history=stable_history if history_size > 0 else [],
+                        source_lang=source_lang
                     )
                     max_tokens = max(512, min(4096, len(masked_source) // 2 + 128))
                     payload = {
@@ -1265,6 +1327,8 @@ def translate_with_plamo(
                     translated_results[current_key] = translated_value
                     if on_translation:
                         on_translation(current_key, source, translated_value)
+                    if on_model_translation:
+                        on_model_translation(current_key, source, translated_value, model)
                 if history_size > 0 and len(source) < 300 and len(translated_value) < 300:
                     history.append((
                         PLAMO_STYLE_PATTERN.sub("", source).strip(),
@@ -1387,6 +1451,9 @@ class ModTranslator:
         self.engine = args.engine
         self.api_key = args.key
         self.model_name = args.model
+        self.plamo_models = parse_plamo_model_ids(getattr(args, "plamo_models", None)) if self.engine == "plamo" else []
+        self.exclude_devices = parse_excluded_devices(getattr(args, "exclude_devices", None)) if self.engine == "plamo" else []
+        self.auto_discover_plamo = self.engine == "plamo" and hasattr(args, "exclude_devices")
         self.workers = getattr(args, "workers", 1)
         if self.workers < 1:
             raise ValueError("並列数は1以上を指定してください")
@@ -1432,7 +1499,31 @@ class ModTranslator:
                 exit(1)
 
         if self.engine == "plamo":
-            self.model_name = self.model_name or resolve_plamo_model(self.plamo_api_url)
+            if self.auto_discover_plamo and not self.plamo_models:
+                self.plamo_models = discover_plamo_models(
+                    self.exclude_devices, model_filter=self.model_name
+                )
+                print(
+                    f"情報: LM Link翻訳対象 {len(self.plamo_models)}モデル: "
+                    f"{', '.join(self.plamo_models)}"
+                )
+            if self.plamo_models:
+                if self.model_name and self.model_name not in self.plamo_models:
+                    raise ValueError("--modelは--plamo-modelsのモデルIDに含めてください")
+                self.model_name = self.model_name or self.plamo_models[0]
+                if len(self.plamo_models) > 1:
+                    instances = [
+                        require_loaded_lm_studio_model(
+                            model, self.plamo_api_url, self.model_load_policy
+                        ) for model in self.plamo_models
+                    ]
+                    if len(set(instances)) != len(instances):
+                        raise ValueError("翻訳モデルが同じロード済みインスタンスを参照しています")
+                    self.plamo_models = instances
+                    self.model_name = instances[0]
+            else:
+                self.model_name = self.model_name or resolve_plamo_model(self.plamo_api_url)
+                self.plamo_models = [self.model_name]
             if self.repair_model:
                 if (
                     self.model_name == self.repair_model
@@ -1463,9 +1554,13 @@ class ModTranslator:
                 "history_refresh": self.plamo_history_refresh,
                 "key_context": self.plamo_key_context, "format_version": 4
             }
-            self.plamo_settings_id = hashlib.sha256(
-                json.dumps(options, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            ).hexdigest()
+            self.plamo_settings_ids = {}
+            for translation_model in self.plamo_models:
+                per_model_options = dict(options, model=translation_model)
+                self.plamo_settings_ids[translation_model] = hashlib.sha256(
+                    json.dumps(per_model_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+            self.plamo_settings_id = self.plamo_settings_ids[self.model_name]
             previous_options = dict(options, format_version=3)
             self.plamo_previous_settings_id = hashlib.sha256(
                 json.dumps(previous_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -1478,31 +1573,41 @@ class ModTranslator:
             self.plamo_legacy_settings_id = hashlib.sha256(
                 json.dumps(legacy_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()
-            print(f"情報: PLaMo 3 Translate [{self.model_name}], 用語集 {len(self.plamo_glossary)}件")
+            print(
+                f"情報: PLaMo 3 Translate [{', '.join(self.plamo_models)}], "
+                f"用語集 {len(self.plamo_glossary)}件"
+            )
 
     def plamo_cache_key(self, filename, lang_path, key, source, settings_id=None):
-        return json.dumps(
-            [settings_id or self.plamo_settings_id, filename, lang_path, key, source],
-            ensure_ascii=False, separators=(",", ":")
-        )
+        fields = [settings_id or self.plamo_settings_id, filename, lang_path, key, source]
+        if language_code_from_path(lang_path) != "en":
+            fields.append(language_code_from_path(lang_path))
+        return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
-    def plamo_repair_cache_key(self, filename, lang_path, key, source):
-        return json.dumps(
-            ["repair", self.plamo_settings_id, self.repair_model, self.repair_api_url,
-             filename, lang_path, key, source],
-            ensure_ascii=False, separators=(",", ":")
-        )
+    def plamo_repair_cache_key(self, filename, lang_path, key, source, model_name=None):
+        settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
+        fields = ["repair", settings_id, self.repair_model, self.repair_api_url,
+                  filename, lang_path, key, source]
+        if language_code_from_path(lang_path) != "en":
+            fields.append(language_code_from_path(lang_path))
+        return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
     def get_plamo_translation(self, filename, lang_path, key, source):
-        cache_key = self.plamo_cache_key(filename, lang_path, key, source)
-        if cache_key in self.plamo_cache:
-            return self.plamo_cache[cache_key]
+        for settings_id in self.plamo_settings_ids.values():
+            cache_key = self.plamo_cache_key(
+                filename, lang_path, key, source, settings_id
+            )
+            if cache_key in self.plamo_cache:
+                return self.plamo_cache[cache_key]
         if self.repair_model:
-            repair_key = self.plamo_repair_cache_key(filename, lang_path, key, source)
-            if repair_key in self.plamo_cache:
-                repaired = self.plamo_cache[repair_key]
-                if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
-                    return repaired
+            for model_name in self.plamo_models:
+                repair_key = self.plamo_repair_cache_key(
+                    filename, lang_path, key, source, model_name
+                )
+                if repair_key in self.plamo_cache:
+                    repaired = self.plamo_cache[repair_key]
+                    if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
+                        return repaired
         if PLAMO_STYLE_PATTERN.search(source):
             return None
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
@@ -1513,13 +1618,16 @@ class ModTranslator:
                 return self.plamo_cache[previous_key]
         return None
 
-    def save_plamo_translation(self, filename, lang_path, key, source, translated):
-        cache_key = self.plamo_cache_key(filename, lang_path, key, source)
+    def save_plamo_translation(self, filename, lang_path, key, source, translated, model_name=None):
+        settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
+        cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
 
-    def save_plamo_repair_translation(self, filename, lang_path, key, source, translated):
-        cache_key = self.plamo_repair_cache_key(filename, lang_path, key, source)
+    def save_plamo_repair_translation(self, filename, lang_path, key, source, translated, model_name=None):
+        cache_key = self.plamo_repair_cache_key(
+            filename, lang_path, key, source, model_name
+        )
         self.plamo_cache[cache_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
 
@@ -1543,6 +1651,10 @@ class ModTranslator:
             pack_format = detect_pack_format(file_path)
 
             for lang_path, content in lang_files.items():
+                print(
+                    f"  -> 翻訳元: {lang_path} "
+                    f"({language_code_from_path(lang_path)}, {len(content)}項目)"
+                )
                 if self.engine == "plamo":
                     to_translate = {
                         key: source for key, source in content.items()
@@ -1567,15 +1679,33 @@ class ModTranslator:
                             ) if self.plamo_key_context else None,
                             history_size=self.plamo_history,
                             history_refresh=self.plamo_history_refresh,
-                            on_translation=lambda key, src, dst: self.save_plamo_translation(
-                                filename, lang_path, key, src, dst
+                            on_translation=(
+                                None if len(self.plamo_models) > 1
+                                else lambda key, src, dst: self.save_plamo_translation(
+                                    filename, lang_path, key, src, dst
+                                )
                             ),
+                            on_model_translation=(
+                                (lambda key, src, dst, model: self.save_plamo_translation(
+                                    filename, lang_path, key, src, dst, model
+                                )) if len(self.plamo_models) > 1 else None
+                            ),
+                            model_names=self.plamo_models if len(self.plamo_models) > 1 else None,
                             repair_model=self.repair_model,
                             repair_api_url=self.repair_api_url,
+                            source_lang=language_code_from_path(lang_path),
                             workers=self.workers,
                             model_load_policy=self.model_load_policy,
-                            on_repair_translation=lambda key, src, dst: self.save_plamo_repair_translation(
-                                filename, lang_path, key, src, dst
+                            on_repair_translation=(
+                                None if len(self.plamo_models) > 1
+                                else lambda key, src, dst: self.save_plamo_repair_translation(
+                                    filename, lang_path, key, src, dst
+                                )
+                            ),
+                            on_model_repair_translation=(
+                                (lambda key, src, dst, model: self.save_plamo_repair_translation(
+                                    filename, lang_path, key, src, dst, model
+                                )) if len(self.plamo_models) > 1 else None
                             )
                         )
                     else:
@@ -1716,6 +1846,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--key", help="Gemini APIキー")
     parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
+    parser.add_argument("--plamo-models", help="PLaMo専用: 翻訳モデルIDの明示指定（旧方式・互換性用）")
+    parser.add_argument("--exclude-devices", default=None, help="PLaMo専用: LM Linkで除外するデバイス名またはID（カンマ区切り、未指定ですべて）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
     parser.add_argument("--plamo-glossary", help="PLaMo用語集のJSONファイル（原語と訳語）")
@@ -1732,6 +1864,22 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=2, help="LLMエンジンの同時実行数（既定2、1で逐次翻訳）")
 
     args = parser.parse_args()
+    if args.plamo_models and args.engine != "plamo":
+        parser.error("--plamo-models は--engine plamo専用です")
+    if args.exclude_devices and args.engine != "plamo":
+        parser.error("--exclude-devices は--engine plamo専用です")
+    if args.exclude_devices and args.plamo_models:
+        parser.error("--exclude-devices と --plamo-models は同時指定できません")
+    if args.exclude_devices:
+        try:
+            parse_excluded_devices(args.exclude_devices)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.plamo_models:
+        try:
+            parse_plamo_model_ids(args.plamo_models)
+        except ValueError as error:
+            parser.error(str(error))
     if args.workers < 1:
         parser.error("--workers は1以上を指定してください")
     if args.plamo_history < 0 or args.plamo_history > 10:
