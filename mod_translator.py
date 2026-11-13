@@ -8,7 +8,9 @@ import zipfile
 import requests
 import traceback
 import threading
+import math
 from concurrent.futures import ThreadPoolExecutor
+from translation_parallel import translate_parallel_batches, SynchronizedModelSelector, SharedRequestPacer
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation
 from deep_translator import GoogleTranslator
 
@@ -279,9 +281,11 @@ class ModelSelector:
             self.fallback_start_time = None
             self.failure_counts[self.models[best_available_idx]] = 0
 
-    def report_success(self):
+    def report_success(self, model_name=None):
         """成功を報告。カウントをリセットする。"""
-        model = self.models[self.current_idx]
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return
         self.failure_counts[model] = 0
 
         if self.current_idx == 0 or all(
@@ -289,7 +293,7 @@ class ModelSelector:
         ):
             self.fallback_start_time = None
 
-    def report_failure(self):
+    def report_failure(self, model_name=None):
         """
         失敗を報告。
         Returns:
@@ -298,7 +302,9 @@ class ModelSelector:
         if self.current_idx >= len(self.models):
             return "continue"
 
-        model = self.models[self.current_idx]
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return "continue"
         self.failure_counts[model] += 1
         count = self.failure_counts[model]
 
@@ -448,13 +454,31 @@ def translate_google_batch(text_list):
         return text_list
 
 
-def translate_with_gemini(text_dict, api_key, selector):
+def translate_with_gemini(
+    text_dict, api_key, selector, workers=1, request_gate=None, show_progress=True
+):
     """
     Gemini APIを使用した翻訳
     v3.16: ドリルダウン・リトライ機能搭載。欠落が発生した場合、その場に留まり欠落分のみを再試行する。
     """
     if not text_dict:
         return {}
+    if workers < 1:
+        raise ValueError("並列数は1以上を指定してください")
+    if workers > 1 and len(text_dict) > 1:
+        current_model = selector.get_current_model()
+        batch_size, _ = get_model_settings(current_model)
+        chunk_size = max(1, min(batch_size, math.ceil(len(text_dict) / workers)))
+        synchronized = SynchronizedModelSelector(selector)
+        pacer = SharedRequestPacer()
+        return translate_parallel_batches(
+            text_dict, workers, chunk_size,
+            lambda batch: translate_with_gemini(
+                batch, api_key, synchronized, workers=1,
+                request_gate=pacer, show_progress=False
+            ),
+            "Gemini"
+        )
 
     translated_results = {}
     keys = list(text_dict.keys())
@@ -462,7 +486,8 @@ def translate_with_gemini(text_dict, api_key, selector):
     current_idx = 0
 
     start_time = time.time()
-    print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
+    if show_progress:
+        print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
     while current_idx < total:
         current_model = selector.get_current_model()
@@ -488,6 +513,7 @@ def translate_with_gemini(text_dict, api_key, selector):
 
         # バッチ内ループ（全員救出するまで、あるいは諦めるまで回る）
         while not batch_success:
+            response = None
 
             # ターゲット用のDictを作成
             batch_dict = {k: text_dict[k] for k in current_batch_target}
@@ -502,6 +528,8 @@ def translate_with_gemini(text_dict, api_key, selector):
                     "generationConfig": {"responseMimeType": "application/json"},
                 }
 
+                if request_gate:
+                    request_gate.wait(current_model, interval)
                 response = requests.post(url, headers=headers, json=payload, timeout=90)
 
                 if response.status_code == 200:
@@ -605,7 +633,7 @@ def translate_with_gemini(text_dict, api_key, selector):
             if (
                 not batch_success
                 and retry_count >= max_retries
-                and response.status_code != 429
+                and (response is None or response.status_code != 429)
             ):
                 remaining = len(
                     [k for k in current_batch_target if k not in translated_results]
@@ -636,13 +664,15 @@ def translate_with_gemini(text_dict, api_key, selector):
         else:
             eta_str = "計算中..."
 
-        print(
-            f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str} - 使用中: {current_model}"
-        )
+        if show_progress:
+            print(
+                f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str} - 使用中: {current_model}"
+            )
 
         if batch_success:
             current_idx += len(original_batch_keys)
-            time.sleep(interval)
+            if request_gate is None:
+                time.sleep(interval)
 
     return translated_results
 
