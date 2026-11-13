@@ -1,6 +1,15 @@
 import json
+import re
 import subprocess
 import time
+
+
+def plamo_model_priority(model_key):
+    match = re.search(
+        r"plamo-3-translate-(\d+(?:\.\d+)?)b(?:\b|[-_])",
+        model_key.casefold()
+    )
+    return float(match.group(1)) if match else -1.0
 
 
 def parse_excluded_devices(value):
@@ -75,7 +84,7 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
             raise ValueError(f"除外デバイスが見つかりません: {excluded_name}")
         selected_exclusions.append(devices[key])
 
-    model_list = []
+    ranked_models = []
     all_model_owners = {}
     for item in loaded:
         if not isinstance(item, dict):
@@ -100,8 +109,12 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
             )
         all_model_owners[identifier] = device_id
         if device_id not in selected_exclusions:
-            model_list.append(identifier)
+            ranked_models.append((plamo_model_priority(model_key), identifier))
 
-    if not model_list:
+    if not ranked_models:
         raise RuntimeError("除外後に使用可能なロード済みPLaMoモデルがありません")
-    return model_list
+    return [
+        identifier for _, identifier in sorted(
+            ranked_models, key=lambda item: item[0], reverse=True
+        )
+    ]
