@@ -254,9 +254,14 @@ switch ($engine_choice) {
             if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
                 $args_list += "--plamo-api-url", "$plamo_url"
             }
-            $plamo_model = Read-Host "LM StudioのモデルID (Enterで自動検出)"
+            $plamo_model = Read-Host "翻訳モデルID（カンマ区切りで複数指定 / Enterで自動検出）"
             if (-not [string]::IsNullOrWhiteSpace($plamo_model)) {
-                $args_list += "--model", "$plamo_model"
+                if ($plamo_model.Contains(",")) {
+                    $args_list += "--plamo-models", "$plamo_model"
+                }
+                else {
+                    $args_list += "--model", "$plamo_model"
+                }
             }
             $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
             if ($plamo_form -eq "2") {
