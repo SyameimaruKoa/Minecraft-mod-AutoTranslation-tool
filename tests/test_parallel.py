@@ -1,4 +1,6 @@
 import json
+import io
+from contextlib import redirect_stdout
 import threading
 import time
 import unittest
@@ -117,6 +119,76 @@ class ParallelTranslationTests(unittest.TestCase):
         self.assertCountEqual(callback_keys, ["a", "b", "c"])
         self.assertEqual(post.call_count, 2)
         self.assertEqual(list(result), list(texts))
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("mod_translator.requests.post")
+    def test_plamo_parallel_shows_one_zero_repair_summary_and_unique_count(self, post, loaded):
+        barrier = threading.Barrier(2, timeout=3)
+
+        def respond(url, json, timeout):
+            barrier.wait()
+            original = json["prompt"].rsplit("<|plamo:tag|>input", 1)[-1]
+            original = original.split("<|plamo:msg|>", 1)[1].split("<|plamo:tag|>output", 1)[0]
+            return Mock(status_code=200, json=Mock(return_value={
+                "choices": [{"text": "訳" + original, "finish_reason": "stop"}]
+            }))
+
+        post.side_effect = respond
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = translate_with_plamo(
+                {"a": "Stone", "b": "Stone", "c": "Grass"},
+                model_name="plamo-3-translate-0.8b", workers=2,
+                history_size=0, repair_model="lfm2.5"
+            )
+        self.assertEqual(result, {"a": "訳Stone", "b": "訳Stone", "c": "訳Grass"})
+        rendered = output.getvalue()
+        self.assertIn("重複を除いた推論対象: 2 項目", rendered)
+        self.assertIn("重複 1 項目", rendered)
+        self.assertEqual(rendered.count("修復集計:"), 1)
+        self.assertIn("修復集計: 依頼 0件 / 成功 0件 / 失敗・原文維持 0件", rendered)
+        self.assertIn("進捗: 1/2 (50.0%)", rendered)
+        self.assertIn("進捗: 2/2 (100.0%)", rendered)
+        self.assertNotIn("並列進捗", rendered)
+        self.assertNotIn("0分", rendered)
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("mod_translator.repair_plamo_translation")
+    @patch("mod_translator.requests.post")
+    def test_plamo_parallel_aggregates_repairs_with_sequential_log_numbering(
+        self, post, repair, loaded
+    ):
+        barrier = threading.Barrier(2, timeout=3)
+
+        def respond(url, json, timeout):
+            barrier.wait()
+            return Mock(status_code=200, json=Mock(return_value={
+                "choices": [{"text": "訳", "finish_reason": "stop"}]
+            }))
+
+        def repaired(source, draft, *args):
+            return "石 %s" if source.startswith("Stone") else "草 %s"
+
+        post.side_effect = respond
+        repair.side_effect = repaired
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = translate_with_plamo(
+                {"a": "Stone %s", "b": "Grass %s"},
+                model_name="plamo-3-translate-0.8b",
+                history_size=0, workers=2, repair_model="lfm2.5"
+            )
+        self.assertEqual(result, {"a": "石 %s", "b": "草 %s"})
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(repair.call_count, 2)
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("修復集計:"), 1)
+        self.assertIn("修復集計: 依頼 2件 / 成功 2件 / 失敗・原文維持 0件", rendered)
+        self.assertEqual(rendered.count("修復依頼[1件目]"), 1)
+        self.assertEqual(rendered.count("修復依頼[2件目]"), 1)
+        self.assertEqual(rendered.count("修復[1件成功]"), 1)
+        self.assertEqual(rendered.count("修復[2件成功]"), 1)
+        self.assertNotIn("未完了結果を回収中", rendered)
 
     @patch("translation_parallel.SharedRequestPacer.wait")
     @patch("mod_translator.requests.post")
