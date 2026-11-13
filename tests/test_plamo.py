@@ -120,6 +120,30 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertTrue(plamo_format_is_preserved("Color&aGreen", "緑色"))
         self.assertTrue(plamo_format_is_preserved("&AColor", "&B色"))
 
+    def test_angle_bracketed_hint_is_not_a_format_placeholder(self):
+        self.assertTrue(plamo_format_is_preserved(
+            "<Press Shift To Show Details>", "<Shiftキーを押して詳細を表示>"
+        ))
+        self.assertTrue(plamo_format_is_preserved(
+            "Press <Shift> to show details", "詳細を見るには<Shift>キーを押す"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            "Press <Shift> to show details", "<Shiftキーを押して詳細を表示>"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            "Set <amount>", "数量<amount>と<extra>を設定"
+        ))
+
+    @patch("mod_translator.requests.post")
+    def test_angle_bracketed_hint_translates_on_first_attempt(self, post):
+        post.return_value = response_with("<Shiftキーを押して詳細を表示>")
+        source = "<Press Shift To Show Details>"
+        result = translate_with_plamo(
+            {"hint": source}, model_name="plamo-3-translate-0.8b", history_size=0
+        )
+        self.assertEqual(result, {"hint": "<Shiftキーを押して詳細を表示>"})
+        post.assert_called_once()
+
     @patch("mod_translator.requests.get")
     def test_loaded_model_preferred_when_multiple_downloaded(self, get):
         listed = Mock()
