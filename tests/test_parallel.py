@@ -7,8 +7,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from mod_translator import (
-    ModelSelector, translate_local_llm, translate_with_gemini,
-    translate_with_plamo
+    ModelSelector, ModTranslator, parse_plamo_model_ids, translate_local_llm,
+    translate_with_gemini, translate_with_plamo
 )
 from translation_parallel import (
     SharedRequestPacer, SynchronizedModelSelector, translate_parallel_batches
@@ -190,6 +190,94 @@ class ParallelTranslationTests(unittest.TestCase):
         self.assertEqual(rendered.count("修復[1件成功]"), 1)
         self.assertEqual(rendered.count("修復[2件成功]"), 1)
         self.assertNotIn("未完了結果を回収中", rendered)
+
+    def test_model_ids_parse_and_validate_duplicates(self):
+        self.assertEqual(
+            parse_plamo_model_ids(" plamo-local , plamo-linked "),
+            ["plamo-local", "plamo-linked"]
+        )
+        self.assertEqual(parse_plamo_model_ids(None), [])
+        for model_ids in ["same,same", "one,", ",two", "one,,two"]:
+            with self.assertRaises(ValueError):
+                parse_plamo_model_ids(model_ids)
+
+    @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
+    @patch("mod_translator.requests.post")
+    def test_parallel_model_ids_route_to_distinct_instances(self, post, loaded):
+        barrier = threading.Barrier(2, timeout=3)
+        observed = []
+        observed_lock = threading.Lock()
+
+        def respond(url, json, timeout):
+            with observed_lock:
+                observed.append(json["model"])
+            barrier.wait()
+            original = json["prompt"].rsplit("<|plamo:tag|>input", 1)[-1]
+            original = original.split("<|plamo:msg|>", 1)[1].split("<|plamo:tag|>output", 1)[0]
+            return Mock(status_code=200, json=Mock(return_value={
+                "choices": [{"text": "訳" + original, "finish_reason": "stop"}]
+            }))
+
+        post.side_effect = respond
+        result = translate_with_plamo(
+            {"first": "Stone", "second": "Grass"},
+            model_name="plamo-local", model_names=["plamo-local", "plamo-linked"],
+            workers=2, history_size=0
+        )
+        self.assertEqual(result, {"first": "訳Stone", "second": "訳Grass"})
+        self.assertCountEqual(observed, ["plamo-local", "plamo-linked"])
+        self.assertEqual(post.call_count, 2)
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="same-instance")
+    @patch("mod_translator.requests.post")
+    def test_model_pool_refuses_two_aliases_for_one_instance(self, post, loaded):
+        with self.assertRaisesRegex(ValueError, "同じロード済みインスタンス"):
+            translate_with_plamo(
+                {"a": "Stone", "b": "Grass"}, model_name="plamo-local",
+                model_names=["plamo-local", "plamo-linked"], workers=2
+            )
+        post.assert_not_called()
+
+    @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
+    def test_model_specific_cache_survives_expanding_translation_pool(self, loaded):
+        import tempfile
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as folder:
+            def arguments(models):
+                return SimpleNamespace(
+                    input=folder, output=folder, engine="plamo", key=None,
+                    model=None, plamo_models=models,
+                    plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                    plamo_form="plain", plamo_glossary=None, plamo_context="",
+                    plamo_context_file=None, plamo_history=3,
+                    gemma_only=False, force=False, repair_model=None,
+                    repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                    model_load_policy="wait"
+                )
+            original = ModTranslator(arguments("plamo-local"))
+            original.save_plamo_translation(
+                "mod.jar", "assets/test/lang/en_us.json", "a", "Stone", "石"
+            )
+            expanded = ModTranslator(arguments("plamo-local,plamo-linked"))
+            self.assertEqual(
+                expanded.get_plamo_translation(
+                    "mod.jar", "assets/test/lang/en_us.json", "a", "Stone"
+                ), "石"
+            )
+            expanded.save_plamo_translation(
+                "mod.jar", "assets/test/lang/en_us.json", "b", "Grass",
+                "草", "plamo-linked"
+            )
+            self.assertEqual(
+                expanded.get_plamo_translation(
+                    "mod.jar", "assets/test/lang/en_us.json", "b", "Grass"
+                ), "草"
+            )
+            self.assertNotEqual(
+                expanded.plamo_settings_ids["plamo-local"],
+                expanded.plamo_settings_ids["plamo-linked"]
+            )
 
     @patch("translation_parallel.SharedRequestPacer.wait")
     @patch("mod_translator.requests.post")

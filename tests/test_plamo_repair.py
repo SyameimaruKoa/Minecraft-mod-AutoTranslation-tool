@@ -138,6 +138,22 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         post.assert_not_called()
         require.assert_not_called()
 
+    def test_japanese_angle_bracket_hint_is_text_not_syntax(self):
+        from plamo_repair import FORMAT_PATTERN, syntax_free_text
+        source = "<Press Shift To Show Details>"
+        translated = "<Shiftキーを押して詳細を表示>"
+        self.assertEqual(FORMAT_PATTERN.findall(source), [])
+        self.assertEqual(FORMAT_PATTERN.findall(translated), [])
+        self.assertEqual(syntax_free_text(translated), translated)
+        self.assertTrue(has_japanese_translation(translated))
+        self.assertFalse(syntax_text_unchanged(translated, "別の翻訳"))
+        self.assertEqual(
+            restore_simple_syntax(source, translated), translated
+        )
+        self.assertEqual(FORMAT_PATTERN.findall("<amount> §a {0}"), [
+            "<amount>", "§a", "{0}"
+        ])
+
     def test_unusable_punctuation_draft_is_not_a_translation(self):
         self.assertFalse(has_japanese_translation("%s: %s  %s  %s"))
         self.assertFalse(has_japanese_translation(":"))
