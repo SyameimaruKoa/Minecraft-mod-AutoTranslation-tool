@@ -227,12 +227,14 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ### ColabのLM Link認証状態をGoogleドライブへ保存
 
-`run_colab_server.ipynb`は`dbv4-wd14-tagger`のTailscaleと同じ方式で、LM Studioの認証状態を**そのままGoogleドライブに保存・次回自動復元**する。追加のパスフレーズやColabシークレットは不要じゃ。
+`run_colab_server.ipynb`はDBV4のTailscaleと同様に、LM Studioの認証状態をGoogleドライブへ直接保存し、次回自動復元する。パスフレーズやColabシークレットは不要じゃ。
 
-- Googleドライブの既定保存先は`MyDrive/.colab-secret/lmstudio/`。設定セルで`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有する。保存を無効化することもできる。
-- 初回はLM Studioのブラウザ認証が必要。ログイン後に`credentials`と`hub`の認証ファイルを直接保存し、次回起動時に復元する。有効なログイン状態なら再認証しない。
-- 内部デーモン用の`.internal`、モデル本体、ログは保存しない。ドライブ上の認証ファイルは追加暗号化せず保存されるため、ドライブの共有設定には注意すること。
-- モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
+- 保存先は`MyDrive/.colab-secret/lmstudio/`。DBV4と共通の`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を設定セルで変更可能。
+- LM Studioの保存場所は環境によって`~/.lmstudio`か`~/.cache/lm-studio`となるため、両方の`credentials`と、必要な端末識別状態（`.internal/local-identity.json`、`.internal/user-profile.json`）を検出して、保存元別にバックアップする。次回起動前に元の場所へ復元する。
+- 以前の`MyDrive/.colab-secret/lmstudio/credentials`の形式からも復元可能。
+- 初回のみLM Studioのブラウザログイン。`lms whoami`が成功したのに認証ファイルを見つけられない場合は警告を出して処理を続ける。その場合、次回起動時の自動ログイン復元は保証されない。
+- モデル本体やLM Studioのログはバックアップ対象外。認証情報はGoogleドライブへ追加暗号化なしで保存する。
+- モデル取得はpfnet公式GGUFのみで、既定は**8B／Q4_K_M**。公式配布の量子化形式以外は拒否し、途中再開対応でダウンロードする。**Colab上ではリアルタイムの進捗バーで取得済み容量・総容量・速度・残り時間を表示**する。公式サーバーの容量が取得できない場合でも取得済み容量と速度を表示する。 受信が100%になった後はcurl終了確認、GGUF配置、旧モデルのアンロード、モデルのロード、サーバー起動、ロード状態確認の各工程を表示する。LM Studio CLIが停止したときは15秒間隔で経過時間を表示し、工程ごとのタイムアウトを設ける。中断で`.part`が完成済みなら再ダウンロードせず利用する。
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
