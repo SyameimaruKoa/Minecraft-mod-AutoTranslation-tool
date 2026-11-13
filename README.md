@@ -227,17 +227,23 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
-PLaMoの詳細設定にある「翻訳モデルID」へ、**LM Studioのロード済みモデルIDをカンマ区切り**で指定できる。空欄なら従来の自動検出、1個なら従来の単一モデル実行じゃ。複数指定時はロード済みインスタンスが実際に異なることを確認し、並列ワーカーに振り分ける。
+**既定ではLM Link上でロード済みのPLaMoモデルをすべて使用する。** モデルIDや使用デバイスを指定する必要はない。PLaMoの詳細設定では、**除外するデバイス名またはDevice identifierのみ**をカンマ区切りで指定する。空欄なら除外なしじゃ。
 
-例：詳細設定で `plamo-local,plamo-linked` を指定。CLIなら次のとおり。
+例：`Prestige-13-A13M,21KJ` と入力すると、それらの端末にあるPLaMoモデルを翻訳対象から除く。ローカル端末の除外には `local` または自端末名を指定できる。
 
 ```powershell
-python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --plamo-models "plamo-local,plamo-linked" --workers 2
+python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Output_Pack" --exclude-devices "Prestige-13-A13M,21KJ" --workers 2
 ```
 
-**LM Linkの注意点：** 同じ `plamo-3-translate-8b` というモデル名を2つ並べても、どちらのデバイスを使うかは区別できない。LM StudioのAPIは同名モデルを優先デバイスへ送るため、**実際に区別できるモデルインスタンスIDを2つ指定する必要がある**。各デバイスでモデルをロードする際は、CLIの `lms load <model-key> --identifier "plamo-local"` のように固有の識別子を指定できる。利用可能なIDは `/api/v1/models` の `loaded_instances[].id` で確認する。本ツールは自動ロードしない。
+除外なしなら `--exclude-devices` 自体を指定しない。PowerShellの詳細設定でもEnterで全端末を利用する。
 
-同じIDを2つ指定した場合や、異なるIDが同一インスタンスを指す場合はエラーにする。指定したIDが未ロードなら手動ロードを待機する。実際に異なるデバイスへ送信されるかは各インスタンスの割当てに依存する。モデルを追加しても、以前のモデルと設定が同じならそのモデルで作成済みのキャッシュを再利用する。修復用LFMは翻訳モデルには含めず、従来どおり `--repair-model` で別指定する。
+- `lms ps --json`から現在ロード済みのモデル、モデルインスタンスID、`deviceIdentifier`を読み取り、PLaMo 3 Translateだけを自動抽出する。除外が指定された場合は `lms link status --json` から端末名とIDを照合する。LM StudioのCLIが必要じゃ。
+- 明示された除外端末が見つからない場合、除外後に利用可能なPLaMoがない場合はエラーで停止する。自動ロードしない。
+- **同じモデルインスタンスIDが複数端末に存在する場合、APIから送信先を区別できない可能性があるため停止する。** その場合はLM Studioでインスタンスごとに異なるIDを割り当てる必要がある（例：`lms load <model-key> --identifier plamo-local`）。誤って除外端末へ送信することを防ぐためじゃ。
+- `--model`を指定すると、そのモデル名またはインスタンスIDのみに絞り込める。従来の `--plamo-models` は互換性のため残してあるが、除外指定と同時には使用できない。
+- モデルごとの翻訳キャッシュ、重複文章の統合、構文修復用LFMは従来どおりじゃ。
+
+LM Link自体は、同一モデルの通常のAPI呼び出しを優先デバイスに送る仕様じゃ。そのため本ツールは`lms ps --json`の識別情報を確認し、区別不能なら黙って誤配送せず停止する。実機での複数デバイス配分は別途検証が必要じゃ。
 
 ### PLaMo 3 Translateの翻訳品質を高める設定
 
