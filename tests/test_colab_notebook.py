@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 
 NOTEBOOK = Path(__file__).resolve().parents[1] / "run_colab_server.ipynb"
@@ -32,10 +33,88 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn('f"plamo-3-translate-{plamo_size}-{quantization}.gguf"', code)
         self.assertIn("https://huggingface.co/pfnet/", code)
         self.assertIn('"--continue-at", "-"', code)
+        self.assertIn("from tqdm.auto import tqdm", code)
+        self.assertIn("requests.head(", code)
+        self.assertIn("subprocess.Popen(command)", code)
+        self.assertIn("progress.update(", code)
+        self.assertIn("download_with_progress(url, partial_path)", code)
         self.assertIn("os.replace(partial_path, model_path)", code)
         self.assertIn('"lms", "load"', code)
         self.assertNotIn('"lms", "get"', code)
         self.assertNotIn('subprocess.DEVNULL)', code)
+
+    def test_download_progress_tracks_resumed_file_size(self):
+        source = self.code_cells[-1]
+        functions = [
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in ("get_gguf_size", "download_with_progress")
+        ]
+
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "test.gguf.part"
+            destination.write_bytes(b"abcd")
+            progress_instances = []
+            commands = []
+
+            class FakeProgress:
+                def __init__(self, **kwargs):
+                    self.n = kwargs["initial"]
+                    self.total = kwargs["total"]
+                    self.updates = [self.n]
+                    progress_instances.append(self)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def update(self, delta):
+                    self.n += delta
+                    self.updates.append(self.n)
+
+            class FakeProcess:
+                def __init__(self, command):
+                    commands.append(command)
+                    self.count = 0
+
+                def poll(self):
+                    if self.count < 2:
+                        self.count += 1
+                        with destination.open("ab") as output:
+                            output.write(b"xyz")
+                        return None
+                    return 0
+
+                def wait(self):
+                    return 0
+
+            response = SimpleNamespace(
+                headers={"Content-Length": "10"}, raise_for_status=lambda: None
+            )
+            namespace = {
+                "requests": SimpleNamespace(
+                    head=lambda *args, **kwargs: response,
+                    RequestException=RuntimeError
+                ),
+                "tqdm": FakeProgress,
+                "subprocess": SimpleNamespace(
+                    Popen=FakeProcess,
+                    CalledProcessError=OSError
+                ),
+                "time": SimpleNamespace(sleep=lambda seconds: None)
+            }
+            exec(
+                compile(ast.Module(body=functions, type_ignores=[]), "<notebook>", "exec"),
+                namespace
+            )
+            namespace["download_with_progress"]("https://example.com/model.gguf", destination)
+            self.assertEqual(destination.read_bytes(), b"abcdxyzxyz")
+            self.assertEqual(progress_instances[0].total, 10)
+            self.assertEqual(progress_instances[0].updates, [4, 7, 10])
+            self.assertIn("--continue-at", commands[0])
+            self.assertIn("--silent", commands[0])
 
     def test_auth_state_is_copied_directly_without_extra_passwords(self):
         code = self.code_cells[2]
