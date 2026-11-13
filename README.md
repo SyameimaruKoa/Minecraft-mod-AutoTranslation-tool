@@ -225,6 +225,15 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ローカルLLMで同時実行を増やしても、単一GPUの処理能力によっては速度が上がらない場合があるぞ。
 
+### ColabのLM Link認証状態をGoogleドライブへ保存
+
+`run_colab_server.ipynb`は`dbv4-wd14-tagger`のTailscaleと同じ方式で、LM Studioの認証状態を**そのままGoogleドライブに保存・次回自動復元**する。追加のパスフレーズやColabシークレットは不要じゃ。
+
+- Googleドライブの既定保存先は`MyDrive/.colab-secret/lmstudio/`。設定セルで`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有する。保存を無効化することもできる。
+- 初回はLM Studioのブラウザ認証が必要。ログイン後に`credentials`と`hub`の認証ファイルを直接保存し、次回起動時に復元する。有効なログイン状態なら再認証しない。
+- 内部デーモン用の`.internal`、モデル本体、ログは保存しない。ドライブ上の認証ファイルは追加暗号化せず保存されるため、ドライブの共有設定には注意すること。
+- モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
+
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
 **既定ではLM Link上でロード済みのPLaMoモデルをすべて使用する。** モデルIDや使用デバイスを指定する必要はない。PLaMoの詳細設定では、**除外するデバイス名またはDevice identifierのみ**をカンマ区切りで指定する。空欄なら除外なしじゃ。
