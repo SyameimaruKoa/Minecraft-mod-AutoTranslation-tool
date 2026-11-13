@@ -76,7 +76,7 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
         selected_exclusions.append(devices[key])
 
     model_list = []
-    model_owners = {}
+    all_model_owners = {}
     for item in loaded:
         if not isinstance(item, dict):
             continue
@@ -92,16 +92,15 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
                 continue
         elif "plamo-3-translate" not in model_key.casefold():
             continue
-        if device_id in selected_exclusions:
-            continue
-        if identifier in model_owners:
+        if identifier in all_model_owners:
             raise RuntimeError(
-                f"モデルID[{identifier}]が複数デバイスに存在します。"
-                "REST APIで端末を確実に区別できません。"
-                "各端末で異なるモデルインスタンスIDを設定してください。"
+                f"モデルID[{identifier}]が複数のロード済みモデルに使用されています。"
+                "除外した端末へ推論が送られる可能性があるため停止します。"
+                "モデルごとに異なるインスタンスIDを設定してください。"
             )
-        model_owners[identifier] = device_id
-        model_list.append(identifier)
+        all_model_owners[identifier] = device_id
+        if device_id not in selected_exclusions:
+            model_list.append(identifier)
 
     if not model_list:
         raise RuntimeError("除外後に使用可能なロード済みPLaMoモデルがありません")
