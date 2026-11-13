@@ -954,9 +954,25 @@ def translate_with_plamo(
         repair_messages = queue.SimpleQueue()
         overall_repair_stats = {"submitted": 0, "succeeded": 0, "failed": 0}
         repair_stats_lock = threading.Lock()
+        repair_log_sequence = {"submitted": 0, "succeeded": 0}
 
         def capture_repair_log(message):
-            repair_messages.put(message)
+            with repair_stats_lock:
+                if message.startswith("  修復依頼["):
+                    repair_log_sequence["submitted"] += 1
+                    message = re.sub(
+                        r"^  修復依頼\[\d+件目\]",
+                        f"  修復依頼[{repair_log_sequence['submitted']}件目]",
+                        message
+                    )
+                elif re.match(r"^  修復\[\d+件成功\]", message):
+                    repair_log_sequence["succeeded"] += 1
+                    message = re.sub(
+                        r"^  修復\[\d+件成功\]",
+                        f"  修復[{repair_log_sequence['succeeded']}件成功]",
+                        message
+                    )
+                repair_messages.put(message)
 
         def flush_repair_log(completed=None, total=None):
             while not repair_messages.empty():
@@ -1266,7 +1282,7 @@ def translate_with_plamo(
             if show_progress:
                 print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
 
-        if repair_stats["submitted"]:
+        if repair_stats["submitted"] and show_progress:
             emit_repair_log(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
         collect_completed_repairs(wait_all=True)
         if repair_stats_report is not None:
