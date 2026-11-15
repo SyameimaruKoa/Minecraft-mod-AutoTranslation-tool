@@ -112,6 +112,66 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertFalse(plamo_format_is_preserved("Give %s to %d", "%dに%sを与える"))
         self.assertTrue(plamo_format_is_preserved("Give %s to %d", "%sに%dを与える"))
 
+    def test_reindexed_printf_arguments_preserve_the_original_values(self):
+        source = "%d slots of type %s have been added to %s"
+        self.assertTrue(plamo_format_is_preserved(
+            source, "%3$sに%2$sタイプのスロットが%1$d個追加されました"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            source, "%3$sに%1$sタイプのスロットが%2$d個追加されました"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            source, "%sに%d個のスロットが%s追加されました"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            source, "%3$sに%2$sタイプのスロットが%1$s個追加されました"
+        ))
+        self.assertFalse(plamo_format_is_preserved(
+            source, "%3$sに%2$sタイプのスロットが%1$d個追加されました%4$s"
+        ))
+        self.assertTrue(plamo_format_is_preserved(
+            "Done: %s and %s", "%2$sと%1$sが完了"
+        ))
+        self.assertTrue(plamo_format_is_preserved(
+            "Progress: %s / %1$s / %s", "進捗: %2$s / %1$s / %1$s"
+        ))
+
+    @patch("mod_translator.requests.post")
+    def test_curios_unnumbered_placeholders_translate_after_reordering(self, post):
+        sources = {
+            "added": "%d slots of type %s have been added to %s",
+            "set": "Type %s now has been set to %d slots for %s",
+            "removed": "%d slots of type %s have been removed from %s",
+        }
+        responses = {
+            "added": "<mc_fmt_2>に<mc_fmt_1>タイプのスロットが<mc_fmt_0>個追加されました",
+            "set": "<mc_fmt_2>の<mc_fmt_0>タイプのスロット数を<mc_fmt_1>個に設定しました",
+            "removed": "<mc_fmt_2>から<mc_fmt_1>タイプのスロットが<mc_fmt_0>個削除されました",
+        }
+
+        def translate(url, json, timeout):
+            prompt = json["prompt"]
+            which = (
+                "added" if "have been added" in prompt
+                else "removed" if "have been removed" in prompt
+                else "set"
+            )
+            return response_with(responses[which])
+
+        post.side_effect = translate
+        result = translate_with_plamo(
+            sources, model_name="plamo-3-translate-8b",
+            workers=2, history_size=0
+        )
+        self.assertEqual(result, {
+            "added": "%3$sに%2$sタイプのスロットが%1$d個追加されました",
+            "set": "%3$sの%1$sタイプのスロット数を%2$d個に設定しました",
+            "removed": "%3$sから%2$sタイプのスロットが%1$d個削除されました",
+        })
+        self.assertEqual(post.call_count, 3)
+        for key, source in sources.items():
+            self.assertTrue(plamo_format_is_preserved(source, result[key]))
+
     def test_literal_percentages_are_not_printf_placeholders(self):
         self.assertTrue(plamo_format_is_preserved(
             "This is 100% of the selected GUI scale.",

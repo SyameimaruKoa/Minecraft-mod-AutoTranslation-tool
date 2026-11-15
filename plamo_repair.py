@@ -2,12 +2,75 @@ import json
 import time
 import requests
 import re
+from collections import Counter
 
 
 FORMAT_PATTERN = re.compile(
     r"§[0-9a-fk-orA-FK-OR]|(?<!\d)%(?:\d+\$)?(?:[-+#0,(]*\d*(?:\.\d+)?[a-zA-Z%]| \d*(?:\.\d+)?[dfeEgGaA](?![A-Za-z]))|\{[\w.:-]+\}|<[A-Za-z_][A-Za-z0-9_.:-]*>"
 )
 SYNTAX_PATTERN = re.compile(FORMAT_PATTERN.pattern + r"|\r\n|\r|\n|\\n")
+
+
+def _printf_uses_argument(token):
+    return token.startswith("%") and not token.endswith("%") and token != "%n"
+
+
+def indexed_printf_token(token, position):
+    if not _printf_uses_argument(token) or re.match(r"%\d+\$", token):
+        return token
+    return "%" + str(position) + "$" + token[1:]
+
+
+def printf_argument_signatures(tokens):
+    implicit_index = 0
+    signatures = []
+    for token in tokens:
+        if not token.startswith("%"):
+            continue
+        if not _printf_uses_argument(token):
+            signatures.append(("literal", token))
+            continue
+        numbered = re.match(r"%(\d+)\$(.+)", token)
+        if numbered:
+            signatures.append((int(numbered.group(1)), numbered.group(2)))
+        else:
+            implicit_index += 1
+            signatures.append((implicit_index, token[1:]))
+    return Counter(signatures)
+
+
+def format_tokens_preserved(source, translated, pattern=FORMAT_PATTERN):
+    expected = pattern.findall(source)
+    actual = pattern.findall(translated)
+    return (
+        printf_argument_signatures(expected) == printf_argument_signatures(actual)
+        and Counter(t for t in expected if not t.startswith("%"))
+        == Counter(t for t in actual if not t.startswith("%"))
+    )
+
+
+def restore_ordered_format_markers(text, markers):
+    argument_markers = [
+        marker for marker, original in markers
+        if _printf_uses_argument(original) and not re.match(r"%\d+\$", original)
+    ]
+    reorder = (
+        all(text.count(marker) == 1 for marker in argument_markers)
+        and any(
+            text.index(first) > text.index(second)
+            for first, second in zip(argument_markers, argument_markers[1:])
+        )
+    )
+    implicit_index = 0
+    for marker, original in markers:
+        replacement = original
+        if _printf_uses_argument(original) and not re.match(r"%\d+\$", original):
+            implicit_index += 1
+            if reorder:
+                replacement = indexed_printf_token(original, implicit_index)
+        text = text.replace(marker, replacement)
+    return text
+
 
 
 def syntax_free_text(value):
@@ -21,7 +84,7 @@ def has_japanese_translation(value):
     )
 
 
-def apply_syntax_offsets(japanese, tokens, offsets):
+def apply_syntax_offsets(japanese, tokens, offsets, allow_reordering=False):
     if (
         not isinstance(japanese, str)
         or not isinstance(offsets, list)
@@ -33,10 +96,18 @@ def apply_syntax_offsets(japanese, tokens, offsets):
         for offset in offsets
     ):
         return None
-    if offsets != sorted(offsets):
+    reordered = offsets != sorted(offsets)
+    if reordered and (
+        not allow_reordering
+        or not all(_printf_uses_argument(token) for token in tokens)
+    ):
         return None
     insertions = {}
+    implicit_index = 0
     for token, offset in zip(tokens, offsets):
+        if reordered and _printf_uses_argument(token) and not re.match(r"%\d+\$", token):
+            implicit_index += 1
+            token = indexed_printf_token(token, implicit_index)
         insertions.setdefault(offset, []).append(token)
     return "".join(
         "".join(insertions.get(index, [])) + (japanese[index] if index < len(japanese) else "")
@@ -52,28 +123,13 @@ def syntax_text_unchanged(draft, repaired):
 
 
 def _format_matches(source, repaired):
-    expected = FORMAT_PATTERN.findall(source)
-    actual = FORMAT_PATTERN.findall(repaired)
-
-    def numbered(tokens):
-        return sorted(token for token in tokens if re.match(r"%\d+\$", token))
-
-    def unnumbered(tokens):
-        return [token for token in tokens if token.startswith("%") and not re.match(r"%\d+\$", token)]
-
-    def others(tokens):
-        return sorted(token for token in tokens if not token.startswith("%"))
-
     return (
-        numbered(expected) == numbered(actual)
-        and unnumbered(expected) == unnumbered(actual)
-        and others(expected) == others(actual)
+        format_tokens_preserved(source, repaired)
         and re.findall(r"§[0-9a-fk-orA-FK-OR]", source)
         == re.findall(r"§[0-9a-fk-orA-FK-OR]", repaired)
         and re.findall(r"\r\n|\r|\n|\\n", source)
         == re.findall(r"\r\n|\r|\n|\\n", repaired)
     )
-
 
 def restore_simple_syntax(source, draft):
     if not draft or not draft.strip():
@@ -211,7 +267,8 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
                     "boundary in the Japanese string. A boundary is before the character "
                     "of that index; the final index is the end of the string. "
                     "Each offset must be between 0 and text_length inclusive, "
-                    "in nondecreasing order. Do not add, remove or change any token."
+                    "in any order when Japanese word order differs. Python will index reordered "
+                    "unnumbered printf arguments. Do not add, remove or change tokens."
                 )
             },
             {
@@ -264,7 +321,7 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
             )
         message = response.json()["choices"][0]["message"]["content"]
         offsets = json.loads(message)["offsets"]
-        repaired = apply_syntax_offsets(japanese, syntax_tokens, offsets)
+        repaired = apply_syntax_offsets(japanese, syntax_tokens, offsets, allow_reordering=True)
         if repaired is None:
             print("警告: 補助モデルの構文位置が不正なため、修復結果を不採用")
             return None
