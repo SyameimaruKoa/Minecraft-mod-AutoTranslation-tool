@@ -162,6 +162,22 @@ def rename_local_model(old_identifier, new_identifier):
             lms("link", "enable")
 
 
+def ensure_link_enabled():
+    status = lms("link", "status", json_output=True, required=False)
+    if not isinstance(status, dict):
+        print("警告: LM Link状態を確認できません。必要ならlms link enableを実行してください")
+        return
+    issues = status.get("issues") or []
+    if "notLoggedIn" in issues:
+        raise RuntimeError("LM Linkへ未ログインです。lms loginの後に再実行してください")
+    if "noAccess" in issues or "badVersion" in issues:
+        raise RuntimeError(f"LM Linkを利用できません: {issues}")
+    if "deviceDisabled" in issues:
+        lms("link", "enable")
+    elif status.get("status") == "offline":
+        print("情報: LM Linkは再接続中です。接続後にクラスター参加が反映されます")
+
+
 def choose_local_model(models):
     local = [item for item in models if not item.get("deviceIdentifier")]
     if not local:
@@ -234,6 +250,7 @@ def main():
             finally:
                 if linked:
                     lms("link", "enable")
+            ensure_link_enabled()
             print(f"クラスター参加完了: {new_id}")
             return
         if len(selected) != 1:
@@ -241,12 +258,14 @@ def main():
         current = selected[0]["identifier"]
         new_id = model_identifier(args.new_id or automatic_identifier(selected[0]["modelKey"]))
         if current == new_id:
+            ensure_link_enabled()
             print(f"クラスター参加済み: {new_id}")
             return
         if not args.yes and input(f"{current} → {new_id} に変更するか？ [y/N]: ").strip().casefold() != "y":
             print("変更を中止しました")
             return
         rename_local_model(current, new_id)
+        ensure_link_enabled()
         print(f"クラスター参加完了: {new_id}")
         return
     current = args.current_id or choose_local_model(models)
