@@ -328,6 +328,60 @@ class LMDeviceExclusionTests(unittest.TestCase):
         )
         require.assert_not_called()
 
+    @patch("mod_translator.requests.post")
+    @patch("mod_translator.discover_plamo_models")
+    def test_mid_run_new_pc_uses_shared_cache_after_original_pc_returns(self, discover, post):
+        import os
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            output = os.path.join(folder, "pack")
+            os.mkdir(mods)
+            with zipfile.ZipFile(os.path.join(mods, "test.jar"), "w") as jar:
+                jar.writestr(
+                    "assets/example/lang/en_us.json",
+                    json.dumps({"item.example.stone": "Stone"})
+                )
+            args = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model=None, exclude_devices=None, plamo_models=None,
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=0,
+                gemma_only=False, force=False, repair_model=None,
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="wait"
+            )
+            model_key = "pfnet/plamo-3-translate-8b"
+            discover.side_effect = [
+                (["local-8b"], model_key),
+                ["new-colab-8b"],
+                (["local-8b"], model_key)
+            ]
+            post.return_value = Mock(status_code=200, text="")
+            post.return_value.json.return_value = {
+                "choices": [{"text": "石", "finish_reason": "stop"}]
+            }
+            original = ModTranslator(args)
+            original.run()
+            self.assertEqual(
+                post.call_args.kwargs["json"]["model"], "new-colab-8b"
+            )
+            self.assertIn("new-colab-8b", original.plamo_settings_ids)
+            cache_path = os.path.join(output, "plamo_cache.json")
+            with open(cache_path, encoding="utf-8") as file:
+                self.assertEqual(len(json.load(file)), 1)
+            resumed = ModTranslator(args)
+            self.assertNotIn("new-colab-8b", resumed.plamo_settings_ids)
+            self.assertEqual(
+                resumed.get_plamo_translation(
+                    "test.jar", "assets/example/lang/en_us.json",
+                    "item.example.stone", "Stone"
+                ), "石"
+            )
+            self.assertEqual(post.call_count, 1)
+
     def test_duplicate_or_empty_exclusion_ids_are_rejected(self):
         for value in ["21KJ,21kj", "local,", ",local", "local,,21KJ"]:
             with self.assertRaises(ValueError):
