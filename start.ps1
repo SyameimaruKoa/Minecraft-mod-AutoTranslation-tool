@@ -23,7 +23,7 @@
     デフォルトは "Output_Pack"。
 
 .PARAMETER Workers
-    [オプション] Gemini、Ollama、LM Studio、PLaMoの同時翻訳数。既定2、1で逐次実行。
+    [オプション] PLaMoは既定autoでLM StudioのParallel設定を利用。それ以外は既定2。1で逐次実行。
 
 .EXAMPLE
     .\start.ps1
@@ -49,8 +49,8 @@
 param (
     [string]$InputPath = "",
     [string]$OutputPath = "",
-    [ValidateRange(1, 16)]
-    [int]$Workers = 2
+    [ValidateScript({ $_ -eq "auto" -or ($_ -match '^[0-9]+$' -and [int]$_ -ge 1 -and [int]$_ -le 16) })]
+    [string]$Workers = "auto"
 )
 
 #region ヘルプ表示処理
@@ -302,8 +302,9 @@ switch ($engine_choice) {
     }
 }
 if ($engine_choice -in @("2", "3", "4")) {
-    $args_list += "--workers", "$Workers"
-    Write-Log "LLM並列数: $Workers" "Cyan"
+    $effectiveWorkers = if ($Workers -eq "auto" -and $engine_choice -ne "4") { "2" } else { $Workers }
+    $args_list += "--workers", "$effectiveWorkers"
+    Write-Log "LLM並列数: $effectiveWorkers" "Cyan"
 }
 #endregion
 

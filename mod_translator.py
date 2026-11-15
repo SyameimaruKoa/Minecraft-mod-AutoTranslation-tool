@@ -12,7 +12,7 @@ import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
-from mod_scan_cache import ModScanCache, TranslationSpeedProfile
+from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA
 from dynamic_plamo_pool import translate_dynamic_model_pool_batches, PLaMoUnavailableError
 from plamo_hosts import parse_plamo_hosts, available_plamo_hosts
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
@@ -972,6 +972,35 @@ def resolve_plamo_model(api_url):
     return chosen
 
 
+def detect_plamo_parallel_limit(api_url, models, fallback=2):
+    try:
+        response = requests.get(
+            _lm_studio_endpoint_base(api_url) + "/api/v1/models", timeout=5
+        )
+        response.raise_for_status()
+        inventory = response.json().get("models", [])
+        if not isinstance(inventory, list):
+            raise ValueError("models配列がありません")
+        identifiers = set(models)
+        limits = []
+        for entry in inventory:
+            if not isinstance(entry, dict) or entry.get("type") != "llm":
+                continue
+            for instance in entry.get("loaded_instances", []):
+                if not isinstance(instance, dict):
+                    continue
+                if instance.get("id") in identifiers:
+                    capacity = (instance.get("config") or {}).get("parallel")
+                    if isinstance(capacity, int) and not isinstance(capacity, bool) and 1 <= capacity <= 16:
+                        limits.append(capacity)
+        if limits:
+            return min(limits)
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as error:
+        print(f"警告: LM Studioの同時推論数を取得できません: {error}", flush=True)
+    print(f"情報: LM Studioの並列設定が未確認のため{fallback}ワーカーを使用", flush=True)
+    return fallback
+
+
 def parse_plamo_model_ids(value):
     if not value:
         return []
@@ -1561,7 +1590,11 @@ class ModTranslator:
         self.plamo_pool_from_lms = False
         self.plamo_model_filter = self.model_name
         self.plamo_model_key = None
-        self.workers = getattr(args, "workers", 1)
+        configured_workers = getattr(args, "workers", 1)
+        self.workers_auto = configured_workers == "auto"
+        if self.workers_auto and self.engine != "plamo":
+            raise ValueError("自動並列数はPLaMo専用です")
+        self.workers = 2 if self.workers_auto else int(configured_workers)
         if self.workers < 1:
             raise ValueError("並列数は1以上を指定してください")
         self.plamo_api_url = args.plamo_api_url
@@ -1663,6 +1696,11 @@ class ModTranslator:
                 require_loaded_lm_studio_model(
                     self.repair_model, self.repair_api_url, self.model_load_policy
                 )
+            if self.workers_auto:
+                self.workers = detect_plamo_parallel_limit(
+                    self.plamo_api_url, [self.model_name], fallback=2
+                )
+                print(f"情報: LM Studio公式Parallel設定から{self.workers}ワーカーを選択", flush=True)
             self.plamo_glossary = load_plamo_glossary(args.plamo_glossary)
             context_parts = [args.plamo_context] if args.plamo_context else []
             if args.plamo_context_file:
@@ -1868,7 +1906,9 @@ class ModTranslator:
         pending_by_language = {}
         total_unique = 0
         processed_unique = 0
+        global_translation_start = time.monotonic()
         speed_profile = None
+        global_eta = None
         if self.engine == "plamo":
             for filename, lang_files, _ in scan_plan:
                 for lang_path, content in lang_files.items():
@@ -1888,14 +1928,18 @@ class ModTranslator:
                 self.plamo_hosts if self.plamo_pool_from_hosts else self.plamo_models,
                 self.workers
             )
-            previous_eta = speed_profile.estimate(total_unique)
+            global_eta = TranslationETA(
+                total_unique, speed_profile.seconds_per_item
+            )
+            previous_eta, predicted_finish = global_eta.estimate(0)
             estimate = (
                 format_time(previous_eta) if previous_eta is not None
                 else "実測速度なし（翻訳開始後に算出）"
             )
             print(
                 f"翻訳対象: {total_unique} ユニーク項目 / "
-                f"全体の予測時間: {estimate}"
+                f"全体の予測時間: {estimate} / "
+                f"完了予定: {predicted_finish or '計測中'}"
             )
 
         print(f"対象ファイル数: {total_files}")
@@ -1927,7 +1971,6 @@ class ModTranslator:
                         if self.plamo_context:
                             base_context += "\n" + self.plamo_context
 
-                        file_translation_start = time.monotonic()
                         planned_unique = pending_by_language[(filename, lang_path)]
                         last_global_progress = -16
 
@@ -1936,15 +1979,8 @@ class ModTranslator:
                             if completed < last_global_progress + 16 and completed != total:
                                 return
                             last_global_progress = completed
-                            remaining = max(0, total_unique - processed_unique - completed)
-                            elapsed = max(time.monotonic() - file_translation_start, 0)
-                            observed_rate = (
-                                elapsed / completed if completed
-                                else speed_profile.seconds_per_item
-                            )
-                            estimated = (
-                                round(remaining * observed_rate)
-                                if observed_rate is not None else None
+                            estimated, finish = global_eta.estimate(
+                                processed_unique + completed
                             )
                             label = (
                                 format_time(estimated) if estimated is not None
@@ -1953,6 +1989,7 @@ class ModTranslator:
                             print(
                                 f"  全体: {processed_unique + completed}/{total_unique} "
                                 f"ユニーク項目 - 推定残り: {label}"
+                                f" - 完了予定: {finish or '計測中'}"
                             )
 
                         translate_with_plamo(
@@ -2013,10 +2050,11 @@ class ModTranslator:
                                 )) if self.plamo_pool_from_lms or len(self.plamo_models) > 1 else None
                             )
                         )
-                        speed_profile.observe(
-                            planned_unique, time.monotonic() - file_translation_start
-                        )
                         processed_unique += planned_unique
+                        speed_profile.observe_cumulative(
+                            processed_unique,
+                            time.monotonic() - global_translation_start
+                        )
                     else:
                         print("  -> 新規翻訳項目なし。完了。")
                     translated_data = content.copy()
@@ -2171,7 +2209,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
-    parser.add_argument("--workers", type=int, default=2, help="同時実行数（既定2、複数PLaMoでは各モデル当たりの並列数）")
+    parser.add_argument("--workers", default="2", help="同時実行数（既定2、PLaMoのみautoでLM Studioのparallel設定を使用）")
 
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
@@ -2201,8 +2239,16 @@ if __name__ == "__main__":
             parse_plamo_model_ids(args.plamo_models)
         except ValueError as error:
             parser.error(str(error))
-    if args.workers < 1:
-        parser.error("--workers は1以上を指定してください")
+    if args.workers == "auto":
+        if args.engine != "plamo":
+            parser.error("--workers auto は--engine plamo専用です")
+    else:
+        try:
+            args.workers = int(args.workers)
+        except ValueError:
+            parser.error("--workers は1以上の整数またはPLaMoのautoを指定してください")
+        if args.workers < 1:
+            parser.error("--workers は1以上を指定してください")
     if args.plamo_history < 0 or args.plamo_history > 10:
         parser.error("--plamo-history は0〜10を指定してください")
     if args.plamo_history_refresh < 1:
