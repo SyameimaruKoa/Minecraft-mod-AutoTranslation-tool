@@ -162,8 +162,10 @@ class TranslationSpeedTests(unittest.TestCase):
                 self.assertEqual(extract.call_count, 1)
             self.assertEqual(post.call_count, 3)
             self.assertEqual(
-                json.loads((output / "assets/demo/lang/ja_jp.json").read_text(encoding="utf-8")),
-                {"a": "日本語"}
+                ModTranslator(args).get_plamo_translation(
+                    "a.jar", "assets/demo/lang/en_us.json", "a", "Granite"
+                ),
+                "日本語"
             )
             self.assertIn("a.jar", first_state["files"])
 
