@@ -10,7 +10,8 @@ class PLaMoUnavailableError(RuntimeError):
 
 def translate_dynamic_model_pool_batches(
     text_dict, workers, batch_size, translator, models, discover_models,
-    label, on_progress=None, refresh_seconds=5.0, hedge_after_seconds=2.0
+    label, on_progress=None, refresh_seconds=5.0, hedge_after_seconds=2.0,
+    on_activity=None
 ):
     if workers < 1 or batch_size < 1:
         raise ValueError("ワーカー数とバッチサイズは1以上にしてください")
@@ -115,6 +116,8 @@ def translate_dynamic_model_pool_batches(
                     )
                     thread.start()
             condition.notify_all()
+        if on_activity is not None and (added or removed):
+            on_activity(None, 0, 0, list(active), workers)
         if added:
             print(f"情報: 翻訳用PLaMoを追加: {', '.join(added)}", flush=True)
         if removed:
@@ -238,6 +241,8 @@ def translate_dynamic_model_pool_batches(
             statistics[model][1] += duration
             sample = duration / count
             rates[model] = sample if model not in rates else rates[model] * 0.7 + sample * 0.3
+            if on_activity is not None:
+                on_activity(model, count, duration, list(active), workers)
             remaining = max(0, int(
                 (time.monotonic() - started) / completed * (len(keys) - completed)
             ))
