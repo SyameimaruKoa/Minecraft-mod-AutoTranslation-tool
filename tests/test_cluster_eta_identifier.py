@@ -137,7 +137,7 @@ class ClusterETATests(unittest.TestCase):
         now[0] = 5
         eta.observe("slow", 2, 4)
         with_two = eta.estimate(8)[0]
-        self.assertLess(with_two, eta.estimate(8)[0] if False else 23)
+        self.assertLess(with_two, 23)
         eta.set_active(["fast"], 2)
         without_slow = eta.estimate(8)[0]
         self.assertGreater(without_slow, with_two)
