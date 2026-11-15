@@ -1,6 +1,8 @@
 import json
 import os
 import tempfile
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -88,6 +90,41 @@ class ModScanCache:
         return plan, {"reused": cached, "rescanned": rescanned, "removed": removed}
 
 
+class TranslationETA:
+    def __init__(self, total, prior_seconds_per_item=None, clock=None, wall_clock=None):
+        self.total = max(0, total)
+        self.prior = prior_seconds_per_item
+        self.clock = clock or time.monotonic
+        self.wall_clock = wall_clock or (lambda: datetime.now().astimezone())
+        self.started = self.clock()
+
+    def estimate(self, completed):
+        remaining = max(0, self.total - completed)
+        if not remaining:
+            seconds = 0
+        elif completed <= 0:
+            seconds = (
+                round(remaining * self.prior)
+                if self.prior is not None else None
+            )
+        else:
+            elapsed = max(0, self.clock() - self.started)
+            observed = elapsed / completed
+            if self.prior is None:
+                rate = observed
+            else:
+                observed_weight = completed / (completed + 64)
+                rate = (
+                    self.prior * (1 - observed_weight)
+                    + observed * observed_weight
+                )
+            seconds = round(rate * remaining)
+        if seconds is None:
+            return None, None
+        finished = self.wall_clock() + timedelta(seconds=seconds)
+        return seconds, finished.strftime("%Y-%m-%d %H:%M")
+
+
 class TranslationSpeedProfile:
     def __init__(self, output_dir, models, workers):
         self.path = os.path.join(output_dir, "plamo_speed.json")
@@ -96,11 +133,18 @@ class TranslationSpeedProfile:
         self.seconds_per_item = self.data.get(self.key)
         if not isinstance(self.seconds_per_item, (float, int)) or self.seconds_per_item <= 0:
             self.seconds_per_item = None
+        self.last_recorded_items = 0
 
     def estimate(self, remaining):
         if self.seconds_per_item is None:
             return None
         return max(0, round(remaining * self.seconds_per_item))
+
+    def observe_cumulative(self, completed, elapsed_seconds):
+        if completed <= self.last_recorded_items or elapsed_seconds <= 0:
+            return
+        self.last_recorded_items = completed
+        self.observe(completed, elapsed_seconds)
 
     def observe(self, unique_items, elapsed_seconds):
         if unique_items <= 0 or elapsed_seconds <= 0:
