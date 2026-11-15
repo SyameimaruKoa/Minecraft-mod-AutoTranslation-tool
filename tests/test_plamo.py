@@ -678,6 +678,78 @@ class PlamoTranslationTests(unittest.TestCase):
         self.assertEqual(translate_with_plamo({"a": "Complete"}, model_name="plamo-3-translate-2b"), {"a": "完全"})
         self.assertEqual(post.call_count, 2)
 
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_transient_http_500_retries_same_translation(self, post, sleep):
+        post.side_effect = [Mock(status_code=500, text="Internal Server Error"), response_with("石")]
+        result = translate_with_plamo({"a": "Stone"}, model_name="plamo-3-translate-8b-colab")
+        self.assertEqual(result, {"a": "石"})
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["json"],
+            post.call_args_list[1].kwargs["json"]
+        )
+        sleep.assert_called_once_with(1)
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_transient_http_429_and_503_retry(self, post, sleep):
+        post.side_effect = [
+            Mock(status_code=429, text="rate limited"),
+            Mock(status_code=503, text="server unavailable"),
+            response_with("石")
+        ]
+        self.assertEqual(
+            translate_with_plamo({"a": "Stone"}, model_name="plamo-3-translate-8b-colab"),
+            {"a": "石"}
+        )
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_http_500_retry_exhaustion_does_not_silently_skip(self, post, sleep):
+        post.return_value = Mock(status_code=500, text="Internal Server Error")
+        with self.assertRaisesRegex(RuntimeError, "6回連続"):
+            translate_with_plamo({"a": "Stone"}, model_name="plamo-3-translate-8b-colab")
+        self.assertEqual(post.call_count, 6)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2, 4, 8, 10])
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_non_transient_http_400_is_not_retried(self, post, sleep):
+        post.return_value = Mock(status_code=400, text="Bad Request")
+        with self.assertRaisesRegex(RuntimeError, "API HTTP 400"):
+            translate_with_plamo({"a": "Stone"}, model_name="plamo-3-translate-8b-colab")
+        post.assert_called_once()
+        sleep.assert_not_called()
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_multiline_translation_retries_http_500(self, post, sleep):
+        post.side_effect = [
+            Mock(status_code=500, text="Internal Server Error"),
+            response_with("赤<mc_line_0>青")
+        ]
+        self.assertEqual(
+            translate_with_plamo({"a": "Red\\nBlue"}, model_name="plamo-3-translate-8b-colab"),
+            {"a": "赤\\n青"}
+        )
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="loaded")
+    @patch("mod_translator.requests.post", return_value=response_with("石"))
+    def test_parallel_repair_checks_load_state_once_per_job(self, post, loaded):
+        inputs = {f"key{i}": f"Stone {i}" for i in range(40)}
+        result = translate_with_plamo(
+            inputs, model_name="plamo-3-translate-8b-colab",
+            repair_model="lfm3-1.7b", workers=2
+        )
+        self.assertEqual(len(result), len(inputs))
+        self.assertEqual(post.call_count, len(inputs))
+        self.assertEqual(loaded.call_count, 2)
+
     @patch("mod_translator.requests.post")
     def test_fails_fast_when_server_is_unavailable(self, post):
         from requests.exceptions import ConnectionError

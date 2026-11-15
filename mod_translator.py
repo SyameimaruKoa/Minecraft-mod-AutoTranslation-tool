@@ -829,6 +829,31 @@ def mask_plamo_linebreaks(source):
     return re.sub(r"\r\n|\r|\n|\\n", mask, source), markers
 
 
+def request_plamo_completion(api_url, payload, timeout):
+    max_attempts = 6
+    for attempt in range(1, max_attempts + 1):
+        response = requests.post(api_url, json=payload.copy(), timeout=timeout)
+        if response.status_code < 400:
+            return response
+        message = (
+            f"LM Studio / PLaMo API HTTP {response.status_code}: "
+            + response.text[:1000]
+        )
+        if response.status_code != 429 and response.status_code < 500:
+            raise RuntimeError(message)
+        if attempt == max_attempts:
+            raise RuntimeError(
+                f"PLaMoの一時的なHTTPエラーが{max_attempts}回連続したため停止: {message}"
+            )
+        delay = min(2 ** (attempt - 1), 10)
+        print(
+            f"警告: PLaMo API HTTP {response.status_code} "
+            f"（{attempt}/{max_attempts}）。{delay}秒後に同じ翻訳要求を再試行するのじゃ。",
+            flush=True
+        )
+        time.sleep(delay)
+
+
 def translate_plamo_multiline_glossary(
     source, model, api_url, form, context, glossary, history, load_policy=None,
     source_lang="en"
@@ -852,19 +877,14 @@ def translate_plamo_multiline_glossary(
     try:
         if load_policy:
             require_loaded_lm_studio_model(model, api_url, load_policy)
-        response = requests.post(
+        response = request_plamo_completion(
             api_url,
-            json={
+            {
                 "model": model, "prompt": prompt, "temperature": 0,
                 "max_tokens": max_tokens, "stop": PLAMO_STOP_TOKENS, "stream": False
             },
             timeout=(10, timeout)
         )
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"LM Studio / PLaMo API HTTP {response.status_code}: "
-                + response.text[:1000]
-            )
         choice = response.json()["choices"][0]
         if choice.get("finish_reason") == "length":
             return None
@@ -964,7 +984,7 @@ def translate_with_plamo(
     model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
     repair_log=None, repair_stats_report=None, model_names=None,
     on_model_translation=None, on_model_repair_translation=None,
-    source_lang="en"
+    source_lang="en", verify_model_load=True
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -987,6 +1007,18 @@ def translate_with_plamo(
         if len(set(loaded_models)) != len(loaded_models):
             raise ValueError("複数の翻訳モデルIDが同じロード済みインスタンスを参照しています")
         translation_models = loaded_models
+
+    if repair_model:
+        if any(
+            model == repair_model
+            and _lm_studio_endpoint_base(api_url) == _lm_studio_endpoint_base(repair_api_url)
+            for model in translation_models
+        ):
+            raise ValueError("翻訳モデルと修復モデルは別のロード済みモデルを指定してください")
+        if verify_model_load:
+            for model in translation_models:
+                require_loaded_lm_studio_model(model, api_url, model_load_policy)
+            require_loaded_lm_studio_model(repair_model, repair_api_url, model_load_policy)
 
     if (workers > 1 or len(translation_models) > 1) and len(unique_texts) > 1:
         group_items = list(unique_texts.items())
@@ -1065,7 +1097,7 @@ def translate_with_plamo(
                 repair_stats_report=record_group_stats,
                 on_model_translation=saved_model_callback,
                 on_model_repair_translation=saved_model_repair_callback,
-                source_lang=source_lang
+                source_lang=source_lang, verify_model_load=False
             )
             return {
                 canonical: translated[canonical]
@@ -1098,12 +1130,6 @@ def translate_with_plamo(
     if history_refresh < 1:
         raise ValueError("history_refresh は1以上で指定してください")
     glossary = glossary or []
-    if repair_model:
-        if model == repair_model and _lm_studio_endpoint_base(api_url) == _lm_studio_endpoint_base(repair_api_url):
-            raise ValueError("翻訳モデルと修復モデルは別のロード済みモデルを指定してください")
-        require_loaded_lm_studio_model(model, api_url, model_load_policy)
-        require_loaded_lm_studio_model(repair_model, repair_api_url, model_load_policy)
-
     repair_executor = ThreadPoolExecutor(max_workers=1) if repair_model else None
     repair_stop = threading.Event()
     pending_repairs = []
@@ -1196,7 +1222,7 @@ def translate_with_plamo(
                 translated_value = translate_plamo_multiline_glossary(
                     source, model, api_url, form, entry_context, glossary,
                     stable_history if history_size > 0 else [],
-                    model_load_policy if repair_model else None,
+                    None,
                     source_lang=source_lang
                 )
                 if translated_value is None:
@@ -1242,14 +1268,9 @@ def translate_with_plamo(
                     for attempt in range(1, 4):
                         try:
                             read_timeout = max(120, min(900, payload["max_tokens"] * 0.5))
-                            if repair_model:
-                                require_loaded_lm_studio_model(model, api_url, model_load_policy)
-                            response = requests.post(api_url, json=payload.copy(), timeout=(10, read_timeout))
-                            if response.status_code >= 400:
-                                raise RuntimeError(
-                                    f"LM Studio / PLaMo API HTTP {response.status_code}: "
-                                    + response.text[:1000]
-                                )
+                            response = request_plamo_completion(
+                                api_url, payload, timeout=(10, read_timeout)
+                            )
                             choice = response.json()["choices"][0]
                             if choice.get("finish_reason") == "length":
                                 if payload["max_tokens"] < 4096:
