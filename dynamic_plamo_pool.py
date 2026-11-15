@@ -4,6 +4,10 @@ import threading
 import time
 
 
+class PLaMoUnavailableError(RuntimeError):
+    pass
+
+
 def translate_dynamic_model_pool_batches(
     text_dict, workers, batch_size, translator, models, discover_models,
     label, on_progress=None, refresh_seconds=5.0, hedge_after_seconds=10.0
@@ -35,6 +39,7 @@ def translate_dynamic_model_pool_batches(
     completed_batches = set()
     hedged_batches = set()
     rates = {}
+    quarantined = {}
     statistics = collections.defaultdict(lambda: [0, 0.0])
     completed = 0
     started = time.monotonic()
@@ -88,6 +93,9 @@ def translate_dynamic_model_pool_batches(
             current = set(discovered)
             removed = previous - current
             added = [model for model in discovered if model not in active]
+            for position, (index, preferred) in enumerate(pending):
+                if preferred is not None and preferred not in current:
+                    pending[position] = (index, None)
             for model in removed:
                 del active[model]
             for index, assignment in list(attempts.items()):
@@ -118,7 +126,14 @@ def translate_dynamic_model_pool_batches(
         nonlocal next_check, missing_checks, discovery_failures
         try:
             discovered = discover_models()
-            reconcile(discovered)
+            current = time.monotonic()
+            for model in list(quarantined):
+                if model not in discovered or quarantined[model] <= current:
+                    del quarantined[model]
+            eligible = [
+                model for model in discovered if model not in quarantined
+            ]
+            reconcile(eligible)
             discovery_failures = 0
         except (OSError, RuntimeError, ValueError) as error:
             discovery_failures += 1
@@ -128,7 +143,7 @@ def translate_dynamic_model_pool_batches(
                 raise RuntimeError("翻訳中のLM Linkモデル一覧を確認できません") from error
             next_check = time.monotonic() + refresh_seconds
             return
-        missing_checks = missing_checks + 1 if not discovered else 0
+        missing_checks = missing_checks + 1 if not eligible else 0
         if missing_checks >= 2:
             raise RuntimeError(
                 "稼働中の翻訳用PLaMoが0台になったため停止します。"
@@ -186,6 +201,19 @@ def translate_dynamic_model_pool_batches(
                 if attempts.get(index) is not assignment:
                     continue
             if error is not None:
+                if isinstance(error, PLaMoUnavailableError):
+                    model = assignment["model"]
+                    quarantined[model] = time.monotonic() + 30
+                    print(
+                        f"警告: {label} [{model}] の通信に失敗。"
+                        "残存モデルへ処理を引き継ぎます",
+                        flush=True
+                    )
+                    reconcile([
+                        current for current in active if current != model
+                    ])
+                    refresh()
+                    continue
                 refresh()
                 with condition:
                     if attempts.get(index) is not assignment:
