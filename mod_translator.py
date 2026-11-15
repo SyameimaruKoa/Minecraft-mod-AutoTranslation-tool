@@ -12,6 +12,7 @@ import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
+from mod_scan_cache import ModScanCache, TranslationSpeedProfile
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation, format_tokens_preserved, restore_ordered_format_markers
 from deep_translator import GoogleTranslator
@@ -994,7 +995,7 @@ def translate_with_plamo(
     repair_log=None, repair_stats_report=None, model_names=None,
     on_model_translation=None, on_model_repair_translation=None,
     source_lang="en", verify_model_load=True, on_failure=None,
-    validated_model_pool=False
+    validated_model_pool=False, on_progress=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -1032,7 +1033,11 @@ def translate_with_plamo(
 
     if (workers > 1 or len(translation_models) > 1) and len(unique_texts) > 1:
         group_items = list(unique_texts.items())
-        chunk_size = max(1, min(16, math.ceil(len(group_items) / (workers * 2))))
+        chunk_size = max(
+            1, min(16, math.ceil(
+                len(group_items) / (workers * len(translation_models) * 2)
+            ))
+        )
         if show_progress and len(text_dict) != len(unique_texts):
             skipped = len(text_dict) - len(unique_texts)
             print(
@@ -1065,6 +1070,8 @@ def translate_with_plamo(
         def flush_repair_log(completed=None, total=None):
             while not repair_messages.empty():
                 print(repair_messages.get())
+            if on_progress is not None and completed is not None:
+                on_progress(completed, total)
 
         def record_group_stats(stats):
             with repair_stats_lock:
@@ -1405,6 +1412,8 @@ def translate_with_plamo(
             eta = format_time(elapsed / processed * (total - processed))
             if show_progress:
                 print(f"  進捗: {processed}/{total} - 残り予想: {eta} - 使用中: {model}")
+            if on_progress is not None:
+                on_progress(processed, total)
 
         if repair_stats["submitted"] and show_progress:
             emit_repair_log(f"情報: 修復モデル[{repair_model}]の未完了結果を回収中...")
@@ -1723,21 +1732,60 @@ class ModTranslator:
     def run(self):
         print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
 
-        files = [f for f in os.listdir(self.input_dir) if f.endswith((".jar", ".zip"))]
-        total_files = len(files)
+        files = sorted(
+            filename for filename in os.listdir(self.input_dir)
+            if filename.endswith((".jar", ".zip"))
+        )
+        scanner = ModScanCache(self.input_dir, self.output_dir, self.is_shader_mode)
+        scan_plan, scan_stats = scanner.scan(
+            files, extract_lang_files, detect_pack_format
+        )
+        total_files = len(scan_plan)
+        print(
+            f"事前スキャン完了: {total_files} Mod / "
+            f"再利用 {scan_stats['reused']} / 新規・変更 {scan_stats['rescanned']} / "
+            f"削除 {scan_stats['removed']}"
+        )
+
+        pending_by_language = {}
+        total_unique = 0
+        processed_unique = 0
+        speed_profile = None
+        if self.engine == "plamo":
+            for filename, lang_files, _ in scan_plan:
+                for lang_path, content in lang_files.items():
+                    pending = {
+                        source for key, source in content.items()
+                        if key not in IGNORE_KEYS and isinstance(source, str)
+                        and (
+                            self.force or self.get_plamo_translation(
+                                filename, lang_path, key, source
+                            ) is None
+                        )
+                    }
+                    pending_by_language[(filename, lang_path)] = len(pending)
+                    total_unique += len(pending)
+            speed_profile = TranslationSpeedProfile(
+                self.output_dir, self.plamo_models, self.workers
+            )
+            previous_eta = speed_profile.estimate(total_unique)
+            estimate = (
+                format_time(previous_eta) if previous_eta is not None
+                else "実測速度なし（翻訳開始後に算出）"
+            )
+            print(
+                f"翻訳対象: {total_unique} ユニーク項目 / "
+                f"全体の予測時間: {estimate}"
+            )
 
         print(f"対象ファイル数: {total_files}")
 
-        for idx, filename in enumerate(files):
-            file_path = os.path.join(self.input_dir, filename)
+        for idx, (filename, lang_files, pack_format) in enumerate(scan_plan):
             print(f"\n[{idx+1}/{total_files}] 処理中: {filename}")
 
-            lang_files = extract_lang_files(file_path, self.is_shader_mode)
             if not lang_files:
                 print("  -> 言語ファイルが見つかりませんでした。スキップ。")
                 continue
-
-            pack_format = detect_pack_format(file_path)
 
             for lang_path, content in lang_files.items():
                 print(
@@ -1758,6 +1806,34 @@ class ModTranslator:
                         )
                         if self.plamo_context:
                             base_context += "\n" + self.plamo_context
+
+                        file_translation_start = time.monotonic()
+                        planned_unique = pending_by_language[(filename, lang_path)]
+                        last_global_progress = -16
+
+                        def show_global_progress(completed, total):
+                            nonlocal last_global_progress
+                            if completed < last_global_progress + 16 and completed != total:
+                                return
+                            last_global_progress = completed
+                            remaining = max(0, total_unique - processed_unique - completed)
+                            elapsed = max(time.monotonic() - file_translation_start, 0)
+                            observed_rate = (
+                                elapsed / completed if completed
+                                else speed_profile.seconds_per_item
+                            )
+                            estimated = (
+                                round(remaining * observed_rate)
+                                if observed_rate is not None else None
+                            )
+                            label = (
+                                format_time(estimated) if estimated is not None
+                                else "計測中"
+                            )
+                            print(
+                                f"  全体: {processed_unique + completed}/{total_unique} "
+                                f"ユニーク項目 - 推定残り: {label}"
+                            )
 
                         translate_with_plamo(
                             to_translate, self.model_name, self.plamo_api_url, self.plamo_form,
@@ -1786,6 +1862,7 @@ class ModTranslator:
                             source_lang=language_code_from_path(lang_path),
                             workers=self.workers,
                             model_load_policy=self.model_load_policy,
+                            on_progress=show_global_progress,
                             on_failure=lambda key, record: self.save_plamo_failure(
                                 filename, lang_path, key, record
                             ),
@@ -1801,6 +1878,10 @@ class ModTranslator:
                                 )) if len(self.plamo_models) > 1 else None
                             )
                         )
+                        speed_profile.observe(
+                            planned_unique, time.monotonic() - file_translation_start
+                        )
+                        processed_unique += planned_unique
                     else:
                         print("  -> 新規翻訳項目なし。完了。")
                     translated_data = content.copy()
@@ -1954,7 +2035,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
-    parser.add_argument("--workers", type=int, default=2, help="LLMエンジンの同時実行数（既定2、1で逐次翻訳）")
+    parser.add_argument("--workers", type=int, default=2, help="同時実行数（既定2、複数PLaMoでは各モデル当たりの並列数）")
 
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
