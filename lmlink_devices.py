@@ -81,7 +81,10 @@ def _lms_json(*arguments, required=True):
         return None
 
 
-def discover_plamo_models(excluded_devices=None, model_filter=None):
+def discover_plamo_models(
+    excluded_devices=None, model_filter=None, expected_model_key=None,
+    allow_empty=False, return_model_key=False
+):
     excluded = parse_excluded_devices(excluded_devices)
     loaded = _lms_json("ps")
     if not isinstance(loaded, list):
@@ -126,7 +129,7 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
     ranked_models = []
     all_model_owners = {}
     selected_device_models = {}
-    selected_model_key = None
+    selected_model_key = expected_model_key
     for item in loaded:
         if not isinstance(item, dict):
             continue
@@ -149,6 +152,8 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
                 "モデルごとに異なるインスタンスIDを設定してください。"
             )
         all_model_owners[identifier] = device_id
+        if expected_model_key is not None and model_key != expected_model_key:
+            continue
         if device_id not in selected_exclusions:
             if device_id in selected_device_models:
                 previous = selected_device_models[device_id]
@@ -170,10 +175,13 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
             selected_device_models[device_id] = identifier
             ranked_models.append((plamo_model_priority(model_key), identifier))
 
-    if not ranked_models:
+    if not ranked_models and not allow_empty:
         raise RuntimeError("除外後に使用可能なロード済みPLaMoモデルがありません")
-    return [
+    identifiers = [
         identifier for _, identifier in sorted(
             ranked_models, key=lambda item: item[0], reverse=True
         )
     ]
+    if return_model_key:
+        return identifiers, selected_model_key
+    return identifiers
