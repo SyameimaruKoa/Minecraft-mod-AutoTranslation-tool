@@ -1143,7 +1143,7 @@ def translate_with_plamo(
         else:
             print(message)
 
-    def report_failure(original, keys, draft, raw_output, diagnostics, reason):
+    def report_failure(original, keys, draft, raw_output, diagnostics, reason, repaired=None):
         record = {
             "source": original,
             "plamo_draft": draft,
@@ -1163,7 +1163,8 @@ def translate_with_plamo(
             f"    PLaMo生応答: {json.dumps(raw_output, ensure_ascii=False)}\n"
             f"    LFM生応答: {json.dumps(record['repair_response'], ensure_ascii=False)}\n"
             f"    LFM終了理由: {json.dumps(record['repair_finish_reason'], ensure_ascii=False)}\n"
-            f"    LFMエラー: {json.dumps(record['repair_error'], ensure_ascii=False)}"
+            f"    LFMエラー: {json.dumps(record['repair_error'], ensure_ascii=False)}\n"
+            f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}"
         )
         if on_failure is not None:
             for key in keys:
@@ -1211,7 +1212,8 @@ def translate_with_plamo(
                         else "修復結果なし・不正な翻訳"
                     )
                 report_failure(
-                    original, keys, draft, raw_output, diagnostics, failure_reason
+                    original, keys, draft, raw_output, diagnostics, failure_reason,
+                    repaired
                 )
         pending_repairs[:] = remaining
 
