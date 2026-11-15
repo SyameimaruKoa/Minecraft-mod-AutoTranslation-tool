@@ -414,6 +414,17 @@ def language_code_from_path(lang_path):
     return locale.split("_", 1)[0].split("-", 1)[0]
 
 
+def is_language_resource_path(file, ext, is_shader_mode=False):
+    parts = file.replace("\\", "/").split("/")
+    asset_language = (
+        len(parts) == 4 and parts[0] == "assets"
+        and bool(parts[1]) and parts[2] == "lang"
+    )
+    if asset_language:
+        return ext == ".lang" or (ext == ".json" and not is_shader_mode)
+    return ext == ".lang" and parts[:-1] in (["lang"], ["shaders", "lang"])
+
+
 def extract_lang_files(mod_path, is_shader_mode=False):
     selected = {}
     try:
@@ -427,9 +438,7 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                     continue
                 if language_code_from_path(file) == "ja":
                     continue
-                if ext == ".json" and (
-                    is_shader_mode or "assets" not in file.split("/")
-                ):
+                if not is_language_resource_path(file, ext, is_shader_mode):
                     continue
 
                 with zf.open(file) as f:

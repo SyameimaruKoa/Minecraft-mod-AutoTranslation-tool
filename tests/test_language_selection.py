@@ -90,6 +90,71 @@ class LanguageSelectionTests(unittest.TestCase):
                 ["assets/demo/lang/ko_KR.lang", "shaders/lang/ru_RU.lang"]
             )
 
+    def test_model_json_named_like_locale_is_not_a_language(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/mekanism/models/block/deepslate_ore/tin.json": {
+                    "parent": "minecraft:block/cube_all",
+                    "texture": "mekanism:block/tin_ore"
+                },
+                "assets/mekanism/models/block/en_us.json": {
+                    "display": "This is not a language file"
+                },
+                "assets/mekanism/blockstates/en_us.json": {"variant": "normal"},
+                "assets/mekanism/recipes/en_us.json": {"recipe": "test"},
+                "data/mekanism/recipes/en_us.json": {"result": "tin"},
+                "assets/mekanism/lang/en_us.json": {"block.mekanism.tin": "Tin Ore"}
+            })
+            self.assertEqual(
+                extract_lang_files(archive),
+                {"assets/mekanism/lang/en_us.json": {"block.mekanism.tin": "Tin Ore"}}
+            )
+
+    def test_non_language_lang_files_outside_language_directories_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/demo/textures/en_US.lang": "item=Not a translation\n",
+                "assets/demo/models/en_US.lang": "model=Not a translation\n",
+                "assets/demo/lang/sub/en_US.lang": "nested=Not a translation\n",
+                "data/demo/lang/en_us.json": {"name": "Not a translation"},
+                "assets/demo/advancements/en_us.json": {"title": "Not a translation"},
+                "assets/demo/lang/en_US.lang": "item=Good translation\n"
+            })
+            self.assertEqual(
+                extract_lang_files(archive),
+                {"assets/demo/lang/en_US.lang": {"item": "Good translation"}}
+            )
+
+    def test_shader_locale_paths_and_root_language_folder_are_kept(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "shaders/lang/en_US.lang": "shader=Water\n",
+                "lang/en_US.lang": "menu=Settings\n",
+                "shaders/other/en_US.lang": "invalid=Shader source\n",
+                "shaders/models/en_US.lang": "invalid=Model source\n",
+                "shaders/lang/en_us.json": {"shader": "JSON not supported in shader mode"}
+            })
+            selected = extract_lang_files(archive, is_shader_mode=True)
+            self.assertEqual(
+                selected,
+                {
+                    "lang/en_US.lang": {"menu": "Settings"},
+                    "shaders/lang/en_US.lang": {"shader": "Water"}
+                }
+            )
+            self.assertEqual(extract_lang_files(archive), selected)
+
+    def test_valid_locale_name_in_wrong_folder_is_never_selected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/demo/models/en_us.json": {"a": "Wrong folder", "b": "Wrong"},
+                "assets/demo/lang/en_us.json": {"a": "Correct"}
+            })
+            self.assertEqual(
+                list(extract_lang_files(archive)),
+                ["assets/demo/lang/en_us.json"]
+            )
+
     def test_source_language_codes(self):
         cases = {
             "assets/mod/lang/en_us.json": "en",
