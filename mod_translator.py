@@ -2156,6 +2156,7 @@ if __name__ == "__main__":
     parser.add_argument("--key", help="Gemini APIキー")
     parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
     parser.add_argument("--plamo-models", help="PLaMo専用: 翻訳モデルIDの明示指定（旧方式・互換性用）")
+    parser.add_argument("--plamo-hosts", help="PLaMo専用: 同じモデルIDを持つ独立LM Studio APIのURL（カンマ区切り）")
     parser.add_argument("--exclude-devices", default=None, help="PLaMo専用: LM Linkで除外するデバイス名またはID（カンマ区切り、未指定ですべて）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
@@ -2175,6 +2176,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
         parser.error("--plamo-models は--engine plamo専用です")
+    if args.plamo_hosts and args.engine != "plamo":
+        parser.error("--plamo-hosts は--engine plamo専用です")
+    if args.plamo_hosts and not args.model:
+        parser.error("--plamo-hosts には --model が必要です")
+    if args.plamo_hosts and (args.plamo_models or args.exclude_devices):
+        parser.error("--plamo-hosts は--plamo-models・--exclude-devicesと同時指定できません")
+    if args.plamo_hosts:
+        try:
+            parse_plamo_hosts(args.plamo_hosts)
+        except ValueError as error:
+            parser.error(str(error))
     if args.exclude_devices and args.engine != "plamo":
         parser.error("--exclude-devices は--engine plamo専用です")
     if args.exclude_devices and args.plamo_models:
