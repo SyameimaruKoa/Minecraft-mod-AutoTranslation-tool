@@ -65,6 +65,106 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         )
         self.assertEqual(get.call_count, 2)
 
+    @patch("plamo_repair.requests.get")
+    def test_v1_internal_error_uses_loaded_model_from_v0(self, get):
+        get.side_effect = [
+            Mock(status_code=500),
+            Mock(status_code=200, json=Mock(return_value={
+                "data": [
+                    {"id": "lfm2.5-350m", "state": "loaded"},
+                    {"id": "unloaded", "state": "not-loaded"}
+                ]
+            }))
+        ]
+        self.assertEqual(
+            require_loaded_lm_studio_model(
+                "lfm2.5-350m", "http://localhost:1234/v1/chat/completions", "wait"
+            ), "lfm2.5-350m"
+        )
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("/api/v0/models", get.call_args.args[0])
+
+    @patch("plamo_repair.time.sleep")
+    @patch("plamo_repair.requests.get")
+    def test_wait_policy_recovers_from_temporary_500_errors(self, get, sleep):
+        import requests
+        from plamo_repair import LMStudioTemporaryStatusError
+        error = requests.HTTPError(
+            "500 Server Error", response=Mock(status_code=500)
+        )
+        get.side_effect = [
+            Mock(status_code=500, raise_for_status=Mock(side_effect=error)),
+            Mock(status_code=503),
+            Mock(status_code=200, json=Mock(return_value={
+                "models": [{
+                    "type": "llm", "key": "lfm2.5-350m",
+                    "loaded_instances": [{"id": "lfm2.5-350m"}]
+                }]
+            }))
+        ]
+        self.assertEqual(
+            require_loaded_lm_studio_model(
+                "lfm2.5-350m", "http://localhost:1234/v1/chat/completions",
+                "wait", poll_seconds=0
+            ), "lfm2.5-350m"
+        )
+        self.assertEqual(get.call_count, 3)
+        sleep.assert_called_once_with(0)
+
+    @patch("plamo_repair.requests.get")
+    def test_error_policy_stops_on_persistent_500(self, get):
+        import requests
+        from plamo_repair import LMStudioTemporaryStatusError
+        error = requests.HTTPError(
+            "500 Server Error", response=Mock(status_code=500)
+        )
+        get.side_effect = [
+            Mock(status_code=500, raise_for_status=Mock(side_effect=error)),
+            Mock(status_code=503)
+        ]
+        with self.assertRaises(LMStudioTemporaryStatusError):
+            require_loaded_lm_studio_model(
+                "lfm2.5-350m", "http://localhost:1234/v1/chat/completions",
+                "error"
+            )
+        self.assertEqual(get.call_count, 2)
+
+    @patch("plamo_repair.time.sleep")
+    @patch("plamo_repair.requests.get")
+    def test_wait_policy_recovers_from_connection_error(self, get, sleep):
+        import requests
+        get.side_effect = [
+            requests.ConnectionError("connection reset"),
+            Mock(status_code=200, json=Mock(return_value={
+                "models": [{
+                    "type": "llm", "key": "lfm2.5-350m",
+                    "loaded_instances": [{"id": "lfm2.5-350m"}]
+                }]
+            }))
+        ]
+        self.assertEqual(
+            require_loaded_lm_studio_model(
+                "lfm2.5-350m", "http://localhost:1234/v1/chat/completions",
+                "wait", poll_seconds=0
+            ), "lfm2.5-350m"
+        )
+        sleep.assert_called_once_with(0)
+
+    @patch("plamo_repair.requests.get")
+    def test_bad_request_is_not_retried(self, get):
+        import requests
+        error = requests.HTTPError(
+            "400 Bad Request", response=Mock(status_code=400)
+        )
+        get.return_value = Mock(
+            status_code=400, raise_for_status=Mock(side_effect=error)
+        )
+        with self.assertRaises(RuntimeError):
+            require_loaded_lm_studio_model(
+                "lfm2.5-350m", "http://localhost:1234/v1/chat/completions", "wait"
+            )
+        get.assert_called_once()
+
     @patch("plamo_repair.requests.post")
     @patch("plamo_repair.requests.get")
     def test_missing_repair_model_fails_without_auto_loading(self, get, post):
