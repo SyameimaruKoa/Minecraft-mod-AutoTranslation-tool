@@ -13,7 +13,7 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from mod_scan_cache import ModScanCache, TranslationSpeedProfile
-from dynamic_plamo_pool import translate_dynamic_model_pool_batches
+from dynamic_plamo_pool import translate_dynamic_model_pool_batches, PLaMoUnavailableError
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation, format_tokens_preserved, restore_ordered_format_markers
 from deep_translator import GoogleTranslator
@@ -853,7 +853,7 @@ def request_plamo_completion(api_url, payload, timeout):
         if response.status_code != 429 and response.status_code < 500:
             raise RuntimeError(message)
         if attempt == max_attempts:
-            raise RuntimeError(
+            raise PLaMoUnavailableError(
                 f"PLaMoの一時的なHTTPエラーが{max_attempts}回連続したため停止: {message}"
             )
         delay = min(2 ** (attempt - 1), 10)
@@ -1372,7 +1372,7 @@ def translate_with_plamo(
                             part_result = result
                             break
                         except requests.exceptions.ConnectionError as e:
-                            raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
+                            raise PLaMoUnavailableError(f"PLaMoサーバーに接続できません: {api_url}") from e
                         except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
                             print(f"警告: PLaMo翻訳失敗 ({attempt}/3): {e}")
                             if attempt < 3:
