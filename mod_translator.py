@@ -993,7 +993,8 @@ def translate_with_plamo(
     model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
     repair_log=None, repair_stats_report=None, model_names=None,
     on_model_translation=None, on_model_repair_translation=None,
-    source_lang="en", verify_model_load=True, on_failure=None
+    source_lang="en", verify_model_load=True, on_failure=None,
+    validated_model_pool=False
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -1008,7 +1009,7 @@ def translate_with_plamo(
         raise ValueError("指定した--modelが--plamo-modelsの一覧に含まれていません")
     if not translation_models:
         translation_models = [model_name or resolve_plamo_model(api_url)]
-    if len(translation_models) > 1:
+    if len(translation_models) > 1 and not validated_model_pool:
         loaded_models = [
             require_loaded_lm_studio_model(model, api_url, model_load_policy)
             for model in translation_models
@@ -1513,6 +1514,7 @@ class ModTranslator:
         self.plamo_models = parse_plamo_model_ids(getattr(args, "plamo_models", None)) if self.engine == "plamo" else []
         self.exclude_devices = parse_excluded_devices(getattr(args, "exclude_devices", None)) if self.engine == "plamo" else []
         self.auto_discover_plamo = self.engine == "plamo" and hasattr(args, "exclude_devices")
+        self.plamo_pool_from_lms = False
         self.workers = getattr(args, "workers", 1)
         if self.workers < 1:
             raise ValueError("並列数は1以上を指定してください")
@@ -1562,6 +1564,7 @@ class ModTranslator:
                 self.plamo_models = discover_plamo_models(
                     self.exclude_devices, model_filter=self.model_name
                 )
+                self.plamo_pool_from_lms = True
                 print(
                     f"情報: LM Link翻訳対象 {len(self.plamo_models)}モデル: "
                     f"{', '.join(self.plamo_models)}"
@@ -1570,7 +1573,7 @@ class ModTranslator:
                 if self.model_name and self.model_name not in self.plamo_models:
                     raise ValueError("--modelは--plamo-modelsのモデルIDに含めてください")
                 self.model_name = self.model_name or self.plamo_models[0]
-                if len(self.plamo_models) > 1:
+                if len(self.plamo_models) > 1 and not self.plamo_pool_from_lms:
                     instances = [
                         require_loaded_lm_studio_model(
                             model, self.plamo_api_url, self.model_load_policy
@@ -1777,6 +1780,7 @@ class ModTranslator:
                                 )) if len(self.plamo_models) > 1 else None
                             ),
                             model_names=self.plamo_models if len(self.plamo_models) > 1 else None,
+                            validated_model_pool=self.plamo_pool_from_lms,
                             repair_model=self.repair_model,
                             repair_api_url=self.repair_api_url,
                             source_lang=language_code_from_path(lang_path),
