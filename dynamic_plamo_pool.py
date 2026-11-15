@@ -10,7 +10,7 @@ class PLaMoUnavailableError(RuntimeError):
 
 def translate_dynamic_model_pool_batches(
     text_dict, workers, batch_size, translator, models, discover_models,
-    label, on_progress=None, refresh_seconds=5.0, hedge_after_seconds=10.0
+    label, on_progress=None, refresh_seconds=5.0, hedge_after_seconds=2.0
 ):
     if workers < 1 or batch_size < 1:
         raise ValueError("ワーカー数とバッチサイズは1以上にしてください")
