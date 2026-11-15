@@ -12,7 +12,7 @@ import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
-from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA
+from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA, ClusterETA
 from dynamic_plamo_pool import translate_dynamic_model_pool_batches, PLaMoUnavailableError
 from plamo_hosts import parse_plamo_hosts, available_plamo_hosts
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
@@ -1027,7 +1027,7 @@ def translate_with_plamo(
     on_model_translation=None, on_model_repair_translation=None,
     source_lang="en", verify_model_load=True, on_failure=None,
     validated_model_pool=False, on_progress=None, model_discovery=None,
-    model_routes=None
+    model_routes=None, on_cluster_activity=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -1179,7 +1179,8 @@ def translate_with_plamo(
             complete_groups = translate_dynamic_model_pool_batches(
                 groups, workers, chunk_size, translate_group,
                 translation_models, model_discovery, "PLaMo",
-                on_progress=flush_repair_log
+                on_progress=flush_repair_log,
+                on_activity=on_cluster_activity
             )
         else:
             complete_groups = translate_model_pool_batches(
@@ -1928,9 +1929,18 @@ class ModTranslator:
                 self.plamo_hosts if self.plamo_pool_from_hosts else self.plamo_models,
                 self.workers
             )
-            global_eta = TranslationETA(
+            eta_class = (
+                ClusterETA if self.plamo_pool_from_lms or self.plamo_pool_from_hosts
+                else TranslationETA
+            )
+            global_eta = eta_class(
                 total_unique, speed_profile.seconds_per_item
             )
+            if isinstance(global_eta, ClusterETA):
+                global_eta.set_active(
+                    self.plamo_hosts if self.plamo_pool_from_hosts else self.plamo_models,
+                    self.workers
+                )
             previous_eta, predicted_finish = global_eta.estimate(0)
             estimate = (
                 format_time(previous_eta) if previous_eta is not None
@@ -1973,6 +1983,11 @@ class ModTranslator:
 
                         planned_unique = pending_by_language[(filename, lang_path)]
                         last_global_progress = -16
+
+                        def update_cluster_activity(model, count, duration, active, workers):
+                            global_eta.set_active(active, workers)
+                            if model is not None:
+                                global_eta.observe(model, count, duration)
 
                         def show_global_progress(completed, total):
                             nonlocal last_global_progress
@@ -2028,6 +2043,10 @@ class ModTranslator:
                                     host: (self.model_name, host + "/v1/completions")
                                     for host in self.plamo_hosts
                                 } if self.plamo_pool_from_hosts else None
+                            ),
+                            on_cluster_activity=(
+                                update_cluster_activity if isinstance(global_eta, ClusterETA)
+                                else None
                             ),
                             repair_model=self.repair_model,
                             repair_api_url=self.repair_api_url,
