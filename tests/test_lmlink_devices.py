@@ -184,7 +184,7 @@ class LMDeviceExclusionTests(unittest.TestCase):
 
     @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
     @patch("mod_translator.discover_plamo_models", return_value=["plamo-local", "plamo-prestige"])
-    def test_translator_auto_discovers_all_and_reuses_model_cache(self, discover, require):
+    def test_translator_auto_selects_first_model_and_reuses_cache(self, discover, require):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(
                 input=folder, output=folder, engine="plamo", key=None,
@@ -198,10 +198,10 @@ class LMDeviceExclusionTests(unittest.TestCase):
             )
             translator = ModTranslator(args)
             discover.assert_called_once_with([], model_filter=None)
-            self.assertEqual(translator.plamo_models, ["plamo-local", "plamo-prestige"])
+            self.assertEqual(translator.plamo_models, ["plamo-local"])
             translator.save_plamo_translation(
                 "mod.jar", "assets/test/lang/en_us.json", "a", "Stone", "石",
-                model_name="plamo-prestige"
+                model_name="plamo-local"
             )
             other = ModTranslator(args)
             self.assertEqual(

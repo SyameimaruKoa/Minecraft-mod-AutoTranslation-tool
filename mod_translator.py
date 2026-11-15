@@ -1517,10 +1517,9 @@ class ModTranslator:
             if self.auto_discover_plamo and not self.plamo_models:
                 self.plamo_models = discover_plamo_models(
                     self.exclude_devices, model_filter=self.model_name
-                )
+                )[:1]
                 print(
-                    f"情報: LM Link翻訳対象 {len(self.plamo_models)}モデル: "
-                    f"{', '.join(self.plamo_models)}"
+                    f"情報: LM Link翻訳モデル（固定）: {self.plamo_models[0]}"
                 )
             if self.plamo_models:
                 if self.model_name and self.model_name not in self.plamo_models:
