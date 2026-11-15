@@ -1778,28 +1778,21 @@ class ModTranslator:
     def save_plamo_translation(self, filename, lang_path, key, source, translated, model_name=None):
         if model_name:
             self.register_plamo_model(model_name)
-        settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
+        settings_id = (
+            self.plamo_shared_settings_id or
+            (self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id)
+        )
         cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
-        if self.plamo_shared_settings_id:
-            shared_key = self.plamo_cache_key(
-                filename, lang_path, key, source, self.plamo_shared_settings_id
-            )
-            self.plamo_cache[shared_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
     def save_plamo_repair_translation(self, filename, lang_path, key, source, translated, model_name=None):
         cache_key = self.plamo_repair_cache_key(
-            filename, lang_path, key, source, model_name
+            filename, lang_path, key, source, model_name,
+            settings_id=self.plamo_shared_settings_id
         )
         self.plamo_cache[cache_key] = translated
-        if self.plamo_shared_settings_id:
-            shared_key = self.plamo_repair_cache_key(
-                filename, lang_path, key, source,
-                settings_id=self.plamo_shared_settings_id
-            )
-            self.plamo_cache[shared_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
