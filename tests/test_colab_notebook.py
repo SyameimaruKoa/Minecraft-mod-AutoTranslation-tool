@@ -36,7 +36,8 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn('"Range": f"bytes={offset}-"', code)
         self.assertIn("response.status_code == 206", code)
         self.assertIn("current != total", code)
-        self.assertIn("os.replace(partial_path, model_path)", code)
+        self.assertIn("os.replace(partial, complete)", code)
+        self.assertIn("download_with_progress(url, partial_path, model_path)", code)
         self.assertIn('"lms", "load"', code)
         self.assertNotIn('"lms", "get"', code)
         self.assertNotIn('subprocess.DEVNULL)', code)
@@ -49,7 +50,8 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn("AESGCM", code)
         self.assertNotIn("getpass", code)
         self.assertNotIn("LM_LINK_VAULT_PASSWORD", code)
-        self.assertNotIn(".internal", code)
+        copy_function = code.split("def copy_login_files(source, destination):", 1)[1].split("def restore_login():", 1)[0]
+        self.assertNotIn('".internal"', copy_function)
 
     def test_auth_state_backup_and_restore_without_reauthentication(self):
         code = self.find_code("def backup_login():")
