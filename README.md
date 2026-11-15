@@ -236,7 +236,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
-**既定ではLM Link上の各端末から、ロード済みの翻訳用PLaMoを1つずつ使用する。** モデルIDや使用デバイスを指定する必要はない。PLaMoの詳細設定では、**除外するデバイス名またはDevice identifierのみ**をカンマ区切りで指定する。空欄なら除外なしじゃ。
+**既定ではLM Link上の各端末から、同じモデルID（`modelKey`）のPLaMoを1つずつ使用する。** モデルIDや使用デバイスを指定する必要はない。PLaMoの詳細設定では、**除外するデバイス名またはDevice identifierのみ**をカンマ区切りで指定する。空欄なら除外なしじゃ。
 
 例：`Prestige-13-A13M,21KJ` と入力すると、それらの端末にあるPLaMoモデルを翻訳対象から除く。ローカル端末の除外には `local` または自端末名を指定できる。
 
@@ -247,6 +247,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 除外なしなら `--exclude-devices` 自体を指定しない。PowerShellの詳細設定でもEnterで全端末を利用する。
 
 - `lms ps --json`から現在ロード済みのモデル、モデルインスタンスID、`deviceIdentifier`を読み取り、各端末で翻訳用PLaMo 3 Translateが1つだけか検査する。同一端末に複数ある場合は自動選択せずエラーとする。修復用LFMは対象外。除外が指定された場合は `lms link status --json` から端末名とIDを照合する。LM StudioのCLIが必要じゃ。
+- **分散先の翻訳用PLaMoはすべて`modelKey`が完全一致する必要がある。** 例えばPC-Aに8B＋修復用LFM、PC-Bに同じ8Bなら可。PC-Aが8BでPC-Bが2Bなら停止する。同じ8Bでも`modelKey`が違えば停止する。`modelKey`の一致はファイルハッシュの一致を保証しない。
 - 明示された除外端末が見つからない場合、除外後に利用可能なPLaMoがない場合はエラーで停止する。自動ロードしない。
 - **同じモデルインスタンスIDが複数端末に存在する場合、APIから送信先を区別できない可能性があるため停止する。** その場合はLM Studioでインスタンスごとに異なるIDを割り当てる必要がある（例：`lms load <model-key> --identifier plamo-local`）。誤って除外端末へ送信することを防ぐためじゃ。
 - `--model`を指定すると、そのモデル名またはインスタンスIDのみに絞り込める。従来の `--plamo-models` は互換性のため残してあるが、除外指定と同時には使用できない。
