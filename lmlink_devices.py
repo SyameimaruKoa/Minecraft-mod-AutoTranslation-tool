@@ -131,6 +131,10 @@ def discover_plamo_models(
     ranked_models = []
     all_model_owners = {}
     selected_device_models = {}
+    selected_identifiers = set()
+    duplicate_identifiers = set()
+    selected_identifier_owners = {}
+    excluded_identifier_owners = {}
     selected_model_key = expected_model_key
     for item in loaded:
         if not isinstance(item, dict):
@@ -147,16 +151,21 @@ def discover_plamo_models(
                 continue
         elif "plamo-3-translate" not in model_key.casefold():
             continue
-        if identifier in all_model_owners:
+        previous_key = all_model_owners.get(identifier)
+        if previous_key is not None and previous_key != model_key:
             raise RuntimeError(
-                f"モデルID[{identifier}]が複数のロード済みモデルに使用されています。"
-                "除外した端末へ推論が送られる可能性があるため停止します。"
-                "モデルごとに異なるインスタンスIDを設定してください。"
+                f"モデルID[{identifier}]が異なるPLaMoのmodelKeyに使われています: "
+                f"{previous_key} != {model_key}"
             )
-        all_model_owners[identifier] = device_id
+        if previous_key is not None:
+            duplicate_identifiers.add(identifier)
+        all_model_owners[identifier] = model_key
         if expected_model_key is not None and model_key != expected_model_key:
             continue
-        if device_id not in selected_exclusions:
+        if device_id in selected_exclusions:
+            excluded_identifier_owners.setdefault(identifier, set()).add(device_id)
+        else:
+            selected_identifier_owners.setdefault(identifier, set()).add(device_id)
             if device_id in selected_device_models:
                 previous = selected_device_models[device_id]
                 label = device_id if device_id is not None else "local"
@@ -175,7 +184,26 @@ def discover_plamo_models(
                 )
             selected_model_key = model_key
             selected_device_models[device_id] = identifier
-            ranked_models.append((plamo_model_priority(model_key), identifier))
+            if identifier not in selected_identifiers:
+                selected_identifiers.add(identifier)
+                ranked_models.append((plamo_model_priority(model_key), identifier))
+
+    shared_with_excluded = (
+        set(selected_identifier_owners) & set(excluded_identifier_owners)
+    )
+    if shared_with_excluded:
+        identifiers = ", ".join(sorted(shared_with_excluded))
+        raise RuntimeError(
+            "除外端末と使用端末で同じモデルIDを共有しているため、"
+            f"LM Link REST APIでは送信先を保証できません: {identifiers}"
+        )
+    if duplicate_identifiers and not allow_empty:
+        print(
+            "情報: 同じモデルIDを複数端末で検出。"
+            "LM LinkのREST APIは優先デバイスへ送信するため、"
+            "端末数を推論先の数としては数えません。",
+            flush=True
+        )
 
     if not ranked_models and not allow_empty:
         raise RuntimeError("除外後に使用可能なロード済みPLaMoモデルがありません")

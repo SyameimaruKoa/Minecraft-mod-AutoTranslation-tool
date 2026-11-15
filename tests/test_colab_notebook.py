@@ -258,7 +258,8 @@ class ColabNotebookTests(unittest.TestCase):
         source = self.code_cells[-1]
         self.assertIn('plamo_size = "8b"', self.find_code('USE_GOOGLE_DRIVE = True'))
         self.assertIn('if quantization not in OFFICIAL_GGUF_FORMATS[plamo_size]:', source)
-        self.assertIn('model_id = f"plamo-3-translate-{plamo_size}-colab"', source)
+        self.assertIn('model_id = f"plamo-3-translate-{plamo_size}"', source)
+        self.assertNotIn('model_id = f"plamo-3-translate-{plamo_size}-colab"', source)
 
 
 if __name__ == "__main__":
