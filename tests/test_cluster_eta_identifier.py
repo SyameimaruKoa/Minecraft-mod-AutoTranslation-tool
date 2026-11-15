@@ -26,7 +26,7 @@ class IdentifierManagementTests(unittest.TestCase):
             ),
             [
                 "load", "pfnet/plamo-3-translate-8b@q4_k_m",
-                "--identifier", "plamo-colab", "--gpu", "max",
+                "--identifier", "plamo-colab",
                 "--parallel", "4", "--context-length", "8192", "-y"
             ]
         )
@@ -59,7 +59,7 @@ class IdentifierManagementTests(unittest.TestCase):
             call(
                 "load", "pfnet/plamo-3-translate-8b@q4_k_m",
                 "--identifier", "plamo-3-translate-8b-prestige",
-                "--gpu", "max", "--parallel", "2",
+                "--parallel", "2",
                 "--context-length", "8192", "-y"
             ),
             call("link", "enable")
