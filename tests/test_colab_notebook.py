@@ -146,11 +146,82 @@ class ColabNotebookTests(unittest.TestCase):
     def test_model_lookup_uses_local_rest_without_broken_cli_listing(self):
         code = self.code_cells[-1]
         self.assertIn('run_console(["lms", "server", "start", "--port", "1234"])', code)
+        self.assertIn('unload_local_models_with_retry()', code)
+        self.assertIn('run_console(["lms", "link", "enable"])', code)
         self.assertIn('http://127.0.0.1:1234/api/v1/models', code)
         self.assertIn('"--parallel", str(PARALLEL_REQUESTS)', code)
         self.assertNotIn('read_lms_json', code)
         self.assertNotIn('"lms", "ls"', code)
         self.assertNotIn('"lms", "ps"', code)
+
+    def test_colab_unload_recovers_from_connector_closed(self):
+        from types import SimpleNamespace
+        code = self.code_cells[-1]
+        function = next(
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "unload_local_models_with_retry"
+        )
+        attempts = []
+        sleeps = []
+        statuses = [(1, "LM Link connection closed: connector_closed"), (0, "")]
+        def console(arguments, check=True):
+            attempts.append((arguments, check))
+            status, output = statuses.pop(0)
+            return SimpleNamespace(returncode=status, stdout=output, args=arguments)
+        namespace = {
+            "run_console": console,
+            "subprocess": __import__("subprocess"),
+            "time": SimpleNamespace(sleep=sleeps.append)
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+        namespace["unload_local_models_with_retry"]()
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(
+            attempts, [(["lms", "unload", "--all"], False)] * 2
+        )
+        self.assertEqual(sleeps, [2])
+
+    def test_colab_unload_fails_fast_on_non_transient_error(self):
+        from types import SimpleNamespace
+        import subprocess
+        code = self.code_cells[-1]
+        function = next(
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "unload_local_models_with_retry"
+        )
+        namespace = {
+            "run_console": lambda args, check=True: SimpleNamespace(
+                returncode=1, stdout="invalid option", args=args
+            ),
+            "subprocess": subprocess,
+            "time": SimpleNamespace(sleep=lambda delay: self.fail("must not retry"))
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+        with self.assertRaises(subprocess.CalledProcessError):
+            namespace["unload_local_models_with_retry"]()
+
+    def test_colab_unload_stops_after_retry_limit(self):
+        from types import SimpleNamespace
+        code = self.code_cells[-1]
+        function = next(
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "unload_local_models_with_retry"
+        )
+        sleeps = []
+        namespace = {
+            "run_console": lambda args, check=True: SimpleNamespace(
+                returncode=1, stdout="connector_closed", args=args
+            ),
+            "subprocess": __import__("subprocess"),
+            "time": SimpleNamespace(sleep=sleeps.append)
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+        with self.assertRaisesRegex(RuntimeError, "2回連続"):
+            namespace["unload_local_models_with_retry"](max_attempts=2)
+        self.assertEqual(sleeps, [2])
 
     def test_model_lookup_matches_exact_size_and_quantization(self):
         code = self.code_cells[-1]

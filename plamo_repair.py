@@ -208,6 +208,7 @@ def get_loaded_lm_studio_models(api_url):
                 return loaded
         response.raise_for_status()
         loaded = {}
+        aliases = {}
         for model in response.json().get("models", []):
             if model.get("type") != "llm":
                 continue
@@ -217,8 +218,11 @@ def get_loaded_lm_studio_models(api_url):
                 instance_id = instance.get("id")
                 if isinstance(instance_id, str) and instance_id:
                     loaded[instance_id] = instance_id
-                    if key and len(instances) == 1:
-                        loaded[key] = instance_id
+                    if isinstance(key, str) and key and len(instances) == 1:
+                        aliases.setdefault(key, set()).add(instance_id)
+        for key, identifiers in aliases.items():
+            if key not in loaded and len(identifiers) == 1:
+                loaded[key] = next(iter(identifiers))
         return loaded
     except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as error:
         message = f"LM Studioのロード状態を確認できません: {base_url} ({error})"

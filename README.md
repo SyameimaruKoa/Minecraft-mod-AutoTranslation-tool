@@ -232,7 +232,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 - Googleドライブの既定保存先は`MyDrive/.colab-secret/lmstudio/`。設定セルで`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有する。保存を無効化することもできる。
 - 初回はLM Studioのブラウザ認証が必要。ログイン後に`credentials`と`hub`の認証ファイルを直接保存し、次回起動時に復元する。有効なログイン状態なら再認証しない。
 - 内部デーモン用の`.internal`、モデル本体、ログは保存しない。ドライブ上の認証ファイルは追加暗号化せず保存されるため、ドライブの共有設定には注意すること。
-- モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
+- モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。 LM Linkの一時無効化直後に`lms unload --all`が`connector_closed`などで失敗した場合は、既知の一時エラーに限って再試行する。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
@@ -249,6 +249,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 - `lms ps --json`から現在ロード済みのモデル、モデルインスタンスID、`deviceIdentifier`を読み取り、各端末で翻訳用PLaMo 3 Translateが1つだけか検査する。同一端末に複数ある場合は自動選択せずエラーとする。修復用LFMは対象外。除外が指定された場合は `lms link status --json` から端末名とIDを照合する。LM StudioのCLIが必要じゃ。
 - **分散先の翻訳用PLaMoはすべて`modelKey`が完全一致する必要がある。** 例えばPC-Aに8B＋修復用LFM、PC-Bに同じ8Bなら可。PC-Aが8BでPC-Bが2Bなら停止する。同じ8Bでも`modelKey`が違えば停止する。`modelKey`の一致はファイルハッシュの一致を保証しない。
 - 明示された除外端末が見つからない場合、除外後に利用可能なPLaMoがない場合はエラーで停止する。自動ロードしない。
+- LM Link端末の翻訳用インスタンスIDは`lms ps --json`から取得し、モデル一覧API上のモデルキー別名で上書きしない。CLIで識別できる端末別インスタンスIDをそのままAPIの`model`パラメーターへ渡す。
 - **同じモデルインスタンスIDが複数端末に存在する場合、APIから送信先を区別できない可能性があるため停止する。** その場合はLM Studioでインスタンスごとに異なるIDを割り当てる必要がある（例：`lms load <model-key> --identifier plamo-local`）。誤って除外端末へ送信することを防ぐためじゃ。
 - `--model`を指定すると、そのモデル名またはインスタンスIDのみに絞り込める。従来の `--plamo-models` は互換性のため残してあるが、除外指定と同時には使用できない。
 - モデルごとの翻訳キャッシュ、重複文章の統合、構文修復用LFMは従来どおりじゃ。

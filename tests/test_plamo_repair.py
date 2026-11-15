@@ -49,6 +49,38 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         get.assert_called_once_with("http://127.0.0.1:1234/api/v1/models", timeout=10)
 
     @patch("plamo_repair.requests.get")
+    def test_instance_ids_override_conflicting_model_key_aliases(self, get):
+        get.return_value = Mock(status_code=200)
+        get.return_value.json.return_value = {
+            "models": [
+                {"type": "llm", "key": "plamo-3-translate-8b",
+                 "loaded_instances": [{"id": "plamo-3-translate-8b-colab"}]},
+                {"type": "llm", "key": "publisher/local",
+                 "loaded_instances": [{"id": "plamo-3-translate-8b"}]}
+            ]
+        }
+        loaded = get_loaded_lm_studio_models("http://localhost:1234/v1/completions")
+        self.assertEqual(loaded["plamo-3-translate-8b"], "plamo-3-translate-8b")
+        self.assertEqual(loaded["plamo-3-translate-8b-colab"], "plamo-3-translate-8b-colab")
+        self.assertEqual(loaded["publisher/local"], "plamo-3-translate-8b")
+
+    @patch("plamo_repair.requests.get")
+    def test_ambiguous_model_alias_is_not_resolved_arbitrarily(self, get):
+        get.return_value = Mock(status_code=200)
+        get.return_value.json.return_value = {
+            "models": [
+                {"type": "llm", "key": "plamo-3-translate-8b",
+                 "loaded_instances": [{"id": "instance-a"}]},
+                {"type": "llm", "key": "plamo-3-translate-8b",
+                 "loaded_instances": [{"id": "instance-b"}]}
+            ]
+        }
+        loaded = get_loaded_lm_studio_models("http://localhost:1234/v1/completions")
+        self.assertEqual(loaded["instance-a"], "instance-a")
+        self.assertEqual(loaded["instance-b"], "instance-b")
+        self.assertNotIn("plamo-3-translate-8b", loaded)
+
+    @patch("plamo_repair.requests.get")
     def test_native_v0_fallback_uses_only_loaded_entries(self, get):
         get.side_effect = [
             Mock(status_code=404),
