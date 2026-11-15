@@ -25,18 +25,24 @@ class ColabNotebookTests(unittest.TestCase):
             with self.subTest(cell=index):
                 ast.parse(code)
 
+    @classmethod
+    def find_code(cls, marker):
+        return next(code for code in cls.code_cells if marker in code)
+
     def test_download_uses_official_exact_gguf_and_resumes(self):
         code = self.code_cells[-1]
         self.assertIn('f"plamo-3-translate-{plamo_size}-{quantization}.gguf"', code)
         self.assertIn("https://huggingface.co/pfnet/", code)
-        self.assertIn('"--continue-at", "-"', code)
+        self.assertIn('"Range": f"bytes={offset}-"', code)
+        self.assertIn("response.status_code == 206", code)
+        self.assertIn("current != total", code)
         self.assertIn("os.replace(partial_path, model_path)", code)
         self.assertIn('"lms", "load"', code)
         self.assertNotIn('"lms", "get"', code)
         self.assertNotIn('subprocess.DEVNULL)', code)
 
     def test_auth_state_is_copied_directly_without_extra_passwords(self):
-        code = self.code_cells[2]
+        code = self.find_code("def backup_login():")
         self.assertIn('AUTH_DIRS = ("credentials", "hub")', code)
         self.assertIn('shutil.copy2(original, target)', code)
         self.assertIn('auth_restored = restore_login()', code)
@@ -46,7 +52,7 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn(".internal", code)
 
     def test_auth_state_backup_and_restore_without_reauthentication(self):
-        code = self.code_cells[2]
+        code = self.find_code("def backup_login():")
         defs = [
             node for node in ast.parse(code).body
             if isinstance(node, ast.FunctionDef)
@@ -84,7 +90,11 @@ class ColabNotebookTests(unittest.TestCase):
             namespace["backup_login"]()
 
     def test_login_restore_order_and_no_committed_outputs(self):
-        configuration, startup, restore, login, model = self.code_cells
+        configuration = self.find_code('USE_GOOGLE_DRIVE = True')
+        startup = self.find_code('run_console(["lms", "bootstrap"])')
+        restore = self.find_code("def backup_login():")
+        login = self.find_code('run_console(["lms", "daemon", "up"])')
+        model = self.find_code("OFFICIAL_GGUF_FORMATS =")
         self.assertIn('USE_GOOGLE_DRIVE = True', configuration)
         self.assertIn('DRIVE_FOLDER_NAME = ".colab-secret"', configuration)
         self.assertIn('lms", "bootstrap"', startup)
@@ -101,7 +111,7 @@ class ColabNotebookTests(unittest.TestCase):
 
     def test_drive_destination_matches_dbv4_notebook(self):
         configuration = self.code_cells[0]
-        restore = self.code_cells[2]
+        restore = self.find_code("def backup_login():")
         self.assertIn('DRIVE_FOLDER_NAME = ".colab-secret"', configuration)
         self.assertIn('"/content/drive/MyDrive"', restore)
         self.assertIn('CONFIG_DRIVE_FOLDER / "lmstudio"', restore)
@@ -133,7 +143,7 @@ class ColabNotebookTests(unittest.TestCase):
 
     def test_only_valid_quantization_combination(self):
         source = self.code_cells[-1]
-        self.assertIn('plamo_size = "8b"', source)
+        self.assertIn('plamo_size = "8b"', self.find_code('USE_GOOGLE_DRIVE = True'))
         self.assertIn('if quantization not in OFFICIAL_GGUF_FORMATS[plamo_size]:', source)
         self.assertIn('model_id = f"plamo-3-translate-{plamo_size}-colab"', source)
 
