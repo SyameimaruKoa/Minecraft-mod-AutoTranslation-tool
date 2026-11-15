@@ -282,7 +282,7 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(key, "name")
         self.assertEqual(details["source"], "Enchant %s levels")
         self.assertEqual(details["plamo_response"], "エンチャントレベル")
-        self.assertEqual(details["repair_response"], "")
+        self.assertEqual(details["repair_response"], "", msg=f"details={details!r}; log={output.getvalue()!r}; calls={post.call_args_list!r}")
         self.assertEqual(details["repair_finish_reason"], "length")
         self.assertIn("Expecting value", details["repair_error"])
         self.assertIn('原文: "Enchant %s levels"', output.getvalue())
