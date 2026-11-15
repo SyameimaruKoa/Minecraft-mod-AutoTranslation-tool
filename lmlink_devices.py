@@ -1,7 +1,10 @@
 import json
+import os
 import re
+import shutil
 import subprocess
 import time
+from pathlib import Path
 
 
 def plamo_model_priority(model_key):
@@ -24,10 +27,46 @@ def parse_excluded_devices(value):
     return normalized
 
 
+IS_WINDOWS = os.name == "nt"
+
+
+def find_lms_executable():
+    executable = shutil.which("lms.exe") if IS_WINDOWS else shutil.which("lms")
+    if executable:
+        return executable
+    if not IS_WINDOWS:
+        return "lms"
+
+    executable = shutil.which("lms")
+    if executable:
+        return executable
+
+    home = Path.home()
+    roots = [home / ".lmstudio", home / ".cache" / "lm-studio"]
+    pointer = home / ".lmstudio-home-pointer"
+    if pointer.is_file():
+        try:
+            selected = Path(pointer.read_text(encoding="utf-8-sig").strip()).expanduser()
+            if selected.is_absolute():
+                roots.insert(0, selected)
+        except (OSError, UnicodeError, ValueError):
+            pass
+
+    for root in roots:
+        candidate = root / "bin" / "lms.exe"
+        if candidate.is_file():
+            return str(candidate)
+    raise FileNotFoundError(
+        "LM Studio CLI (lms.exe) が見つかりません。"
+        "LM Studioを起動し、~/.lmstudio/bin または ~/.cache/lm-studio/bin の"
+        "lms.exeを確認してください。"
+    )
+
+
 def _lms_json(*arguments, required=True):
     try:
         process = subprocess.run(
-            ["lms", *arguments, "--json"],
+            [find_lms_executable(), *arguments, "--json"],
             capture_output=True, text=True, encoding="utf-8-sig",
             errors="replace", timeout=20, check=False
         )
