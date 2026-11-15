@@ -53,7 +53,7 @@ class LanguageSelectionTests(unittest.TestCase):
                     "a": "鉄", "b": "Dust", "extra": "追加訳"
                 },
                 "assets/demo/models/ja_jp.json": {"wrong": "模型"},
-                "assets/other/lang/ja_JP.lang": "a=日本語\\nb=Still English\\n",
+                "assets/other/lang/ja_JP.lang": "a=日本語\nb=Still English\n",
             })
             self.assertEqual(
                 extract_japanese_lang_files(archive),
