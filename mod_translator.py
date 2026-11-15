@@ -819,6 +819,14 @@ def mask_plamo_format_tokens(source, ignored=()):
     return PLAMO_FORMAT_PATTERN.sub(mask, source), markers
 
 
+def plamo_output_is_not_russian(value):
+    if not isinstance(value, str):
+        return False
+    has_cyrillic = re.search(r"[\u0400-\u052f]", value) is not None
+    has_japanese = re.search(r"[\u3040-\u30ff\u3400-\u9fff]", value) is not None
+    return not has_cyrillic or has_japanese
+
+
 def plamo_format_is_preserved(source, translated):
     """元の引数番号と書式を維持し、日本語の語順変更に伴う位置指定形式を許す。"""
     return (
@@ -907,7 +915,7 @@ def translate_plamo_multiline_glossary(
         print(f"警告: 全文翻訳に失敗したため改行単位へ切替: {e}")
         return None
 
-    if not is_valid_translation(masked, result):
+    if not is_valid_translation(masked, result) or not plamo_output_is_not_russian(result):
         return None
     if not plamo_format_is_preserved(masked, result):
         return None
@@ -1265,6 +1273,8 @@ def translate_with_plamo(
                 and syntax_text_unchanged(draft, repaired)
                 and plamo_format_is_preserved(original, repaired)
             )
+            if accepted and not plamo_output_is_not_russian(repaired):
+                accepted = False
             if accepted:
                 for key in keys:
                     translated_results[key] = repaired
@@ -1388,6 +1398,8 @@ def translate_with_plamo(
                             rejected_for_repair = result
                             if not is_valid_translation(masked_source, result):
                                 raise ValueError("空の翻訳結果、またはエラー文字列")
+                            if not plamo_output_is_not_russian(result):
+                                raise ValueError("ロシア語の出力を検出。日本語へ再翻訳します")
                             if not plamo_format_is_preserved(masked_source, result):
                                 if protected or "0.8b" in model.lower():
                                     print("警告: 書式保護に失敗。無効な同一条件の再試行は省略")
@@ -1424,7 +1436,10 @@ def translate_with_plamo(
 
                 if len(translated_parts) == len(parts):
                     candidate = "".join(translated_parts)
-                    if plamo_format_is_preserved(source, candidate):
+                    if (
+                        plamo_format_is_preserved(source, candidate)
+                        and plamo_output_is_not_russian(candidate)
+                    ):
                         translated_value = candidate
 
             if translated_value is None:
@@ -1790,13 +1805,17 @@ class ModTranslator:
                 filename, lang_path, key, source, self.plamo_shared_settings_id
             )
             if shared_key in self.plamo_cache:
-                return self.plamo_cache[shared_key]
+                cached = self.plamo_cache[shared_key]
+                if plamo_output_is_not_russian(cached):
+                    return cached
         for settings_id in self.plamo_settings_ids.values():
             cache_key = self.plamo_cache_key(
                 filename, lang_path, key, source, settings_id
             )
             if cache_key in self.plamo_cache:
-                return self.plamo_cache[cache_key]
+                cached = self.plamo_cache[cache_key]
+                if plamo_output_is_not_russian(cached):
+                    return cached
         if self.repair_model:
             if self.plamo_shared_settings_id:
                 shared_repair_key = self.plamo_repair_cache_key(
@@ -1822,7 +1841,9 @@ class ModTranslator:
                 filename, lang_path, key, source, settings_id
             )
             if previous_key in self.plamo_cache:
-                return self.plamo_cache[previous_key]
+                cached = self.plamo_cache[previous_key]
+                if plamo_output_is_not_russian(cached):
+                    return cached
         return None
 
     def plamo_failure_key(self, filename, lang_path, key):
@@ -1952,6 +1973,8 @@ class ModTranslator:
                 f"完了予定: {predicted_finish or '計測中'}"
             )
 
+        if self.engine == "plamo":
+            print("翻訳先: 日本語 (ja)")
         print(f"対象ファイル数: {total_files}")
 
         for idx, (filename, lang_files, pack_format) in enumerate(scan_plan):
