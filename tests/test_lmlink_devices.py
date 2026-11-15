@@ -224,6 +224,60 @@ class LMDeviceExclusionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "複数"):
                 discover_plamo_models()
 
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="same-api-instance")
+    @patch("mod_translator.discover_plamo_models", return_value=[
+        "plamo-3-translate-8b", "plamo-3-translate-8b-colab"
+    ])
+    def test_cli_discovered_two_pcs_keep_distinct_ids_without_api_alias_remap(self, discover, require):
+        with tempfile.TemporaryDirectory() as folder:
+            args = SimpleNamespace(
+                input=folder, output=folder, engine="plamo", key=None,
+                model=None, exclude_devices=None, plamo_models=None,
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3,
+                gemma_only=False, force=False, repair_model=None,
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="wait"
+            )
+            translator = ModTranslator(args)
+            self.assertTrue(translator.plamo_pool_from_lms)
+            self.assertEqual(
+                translator.plamo_models,
+                ["plamo-3-translate-8b", "plamo-3-translate-8b-colab"]
+            )
+            require.assert_not_called()
+
+    @patch("mod_translator.require_loaded_lm_studio_model", return_value="same-api-instance")
+    @patch("mod_translator.requests.post")
+    def test_validated_lm_link_pool_routes_distinct_identifiers(self, post, require):
+        from mod_translator import translate_with_plamo
+        from types import SimpleNamespace
+        from threading import Lock
+
+        seen = []
+        lock = Lock()
+
+        def respond(url, json, timeout):
+            with lock:
+                seen.append(json["model"])
+            return Mock(status_code=200, text="", json=Mock(return_value={
+                "choices": [{"text": "石", "finish_reason": "stop"}]
+            }))
+
+        post.side_effect = respond
+        result = translate_with_plamo(
+            {"a": "Stone", "b": "Granite"},
+            model_name="plamo-3-translate-8b",
+            model_names=["plamo-3-translate-8b", "plamo-3-translate-8b-colab"],
+            validated_model_pool=True, workers=2, history_size=0
+        )
+        self.assertEqual(result, {"a": "石", "b": "石"})
+        self.assertCountEqual(
+            seen, ["plamo-3-translate-8b", "plamo-3-translate-8b-colab"]
+        )
+        require.assert_not_called()
+
     def test_duplicate_or_empty_exclusion_ids_are_rejected(self):
         for value in ["21KJ,21kj", "local,", ",local", "local,,21KJ"]:
             with self.assertRaises(ValueError):
