@@ -6,7 +6,7 @@ from unittest.mock import Mock, call, patch
 from urllib.error import URLError
 
 from lmlink_devices import find_lms_executable
-from plamo_identifier import automatic_identifier, load_configuration, main
+from plamo_identifier import automatic_identifier, ensure_link_enabled, load_configuration, main
 
 
 MODEL_KEY = "pfnet/plamo-3-translate-8b-GGUF/plamo-3-translate-8b-Q4_K_M.gguf"
@@ -33,9 +33,10 @@ class CrossPlatformClusterTests(unittest.TestCase):
             b = automatic_identifier(MODEL_KEY)
         self.assertNotEqual(a, b)
 
+    @patch("plamo_identifier.ensure_link_enabled")
     @patch("plamo_identifier.rename_local_model")
     @patch("plamo_identifier.loaded_plamo_models")
-    def test_join_loaded_windows_or_linux_model(self, loaded, rename):
+    def test_join_loaded_windows_or_linux_model(self, loaded, rename, link):
         loaded.return_value = [LOCAL, REMOTE]
         with patch("plamo_identifier.automatic_identifier", return_value="plamo-3-translate-8b-node-a"):
             with patch.object(sys, "argv", ["plamo_identifier.py", "--join", "--yes"]):
@@ -44,9 +45,10 @@ class CrossPlatformClusterTests(unittest.TestCase):
             "plamo-3-translate-8b", "plamo-3-translate-8b-node-a"
         )
 
+    @patch("plamo_identifier.ensure_link_enabled")
     @patch("plamo_identifier.rename_local_model")
     @patch("plamo_identifier.loaded_plamo_models")
-    def test_join_already_registered_is_idempotent(self, loaded, rename):
+    def test_join_already_registered_is_idempotent(self, loaded, rename, link):
         local = dict(LOCAL, identifier="plamo-3-translate-8b-node-a")
         loaded.return_value = [local]
         with patch("plamo_identifier.automatic_identifier", return_value=local["identifier"]):
@@ -71,7 +73,8 @@ class CrossPlatformClusterTests(unittest.TestCase):
             call("link", "status", json_output=True, required=False),
             call("link", "disable"),
             call("load", MODEL_KEY, "--identifier", new_id, "-y"),
-            call("link", "enable")
+            call("link", "enable"),
+            call("link", "status", json_output=True, required=False)
         ])
 
     @patch("plamo_identifier.loaded_plamo_models", return_value=[])
@@ -89,6 +92,18 @@ class CrossPlatformClusterTests(unittest.TestCase):
             load_configuration(LOCAL["identifier"]),
             (MODEL_KEY, {"parallel": 4, "context_length": 8192})
         )
+
+    @patch("plamo_identifier.lms")
+    def test_join_enables_disabled_lm_link(self, lms):
+        lms.return_value = {"status": "offline", "issues": ["deviceDisabled"]}
+        ensure_link_enabled()
+        lms.assert_any_call("link", "enable")
+
+    @patch("plamo_identifier.lms")
+    def test_join_reports_missing_lm_link_login(self, lms):
+        lms.return_value = {"status": "offline", "issues": ["notLoggedIn"]}
+        with self.assertRaisesRegex(RuntimeError, "lms login"):
+            ensure_link_enabled()
 
     @patch("lmlink_devices.IS_WINDOWS", False)
     @patch("lmlink_devices.shutil.which", return_value=None)
