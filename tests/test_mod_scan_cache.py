@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from mod_scan_cache import ModScanCache, TranslationSpeedProfile
-from mod_translator import ModTranslator, detect_pack_format, extract_lang_files
+from mod_translator import ModTranslator, detect_pack_format, extract_lang_files, extract_japanese_lang_files
 
 
 def make_mod(folder, filename, language):
@@ -62,6 +62,47 @@ class ModScanCacheTests(unittest.TestCase):
             )
             self.assertEqual(stats, {"reused": 1, "rescanned": 1, "removed": 0})
             self.assertEqual([item[0] for item in items], ["a.jar", "b.jar"])
+
+    def test_japanese_scan_cache_is_persisted_without_reopening_unchanged_mod(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            mods, output = root / "mods", root / "output"
+            mods.mkdir()
+            mod = mods / "a.jar"
+            with zipfile.ZipFile(mod, "w") as archive:
+                archive.writestr(
+                    "assets/demo/lang/en_us.json",
+                    json.dumps({"a": "Stone"})
+                )
+                archive.writestr(
+                    "assets/demo/lang/ja_jp.json",
+                    json.dumps({"a": "石"}, ensure_ascii=False)
+                )
+            ModScanCache(mods, output).scan(
+                ["a.jar"], extract_lang_files, detect_pack_format
+            )
+            scanner = ModScanCache(mods, output)
+            _, changed = scanner.scan(
+                ["a.jar"], extract_lang_files, detect_pack_format,
+                extract_japanese_lang_files
+            )
+            self.assertEqual(changed["rescanned"], 1)
+            self.assertEqual(
+                scanner.japanese_files["a.jar"],
+                {"assets/demo/lang/ja_jp.json": {"a": "石"}}
+            )
+            scanner = ModScanCache(mods, output)
+            _, reused = scanner.scan(
+                ["a.jar"],
+                lambda *args: self.fail("source archive was reopened"),
+                lambda *args: self.fail("pack format was rescanned"),
+                lambda *args: self.fail("Japanese archive was reopened")
+            )
+            self.assertEqual(reused, {"reused": 1, "rescanned": 0, "removed": 0})
+            self.assertEqual(
+                scanner.japanese_files["a.jar"],
+                {"assets/demo/lang/ja_jp.json": {"a": "石"}}
+            )
 
     def test_updated_and_removed_mods_invalidate_only_their_cache_entries(self):
         with tempfile.TemporaryDirectory() as folder:
