@@ -178,18 +178,34 @@ def _lm_studio_base_url(api_url):
     return api_url.split("/v1/", 1)[0].rstrip("/")
 
 
+class LMStudioTemporaryStatusError(RuntimeError):
+    pass
+
+
+def _temporary_model_status_error(error):
+    if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(error, requests.HTTPError):
+        response = error.response
+        return response is not None and (
+            response.status_code == 429 or response.status_code >= 500
+        )
+    return False
+
+
 def get_loaded_lm_studio_models(api_url):
     base_url = _lm_studio_base_url(api_url)
     try:
         response = requests.get(base_url + "/api/v1/models", timeout=10)
-        if response.status_code == 404:
-            response = requests.get(base_url + "/api/v0/models", timeout=10)
-            response.raise_for_status()
-            loaded = {}
-            for model in response.json().get("data", []):
-                if model.get("state") == "loaded" and isinstance(model.get("id"), str):
-                    loaded[model["id"]] = model["id"]
-            return loaded
+        if response.status_code == 404 or response.status_code >= 500:
+            legacy = requests.get(base_url + "/api/v0/models", timeout=10)
+            if response.status_code == 404 or legacy.status_code == 200:
+                legacy.raise_for_status()
+                loaded = {}
+                for model in legacy.json().get("data", []):
+                    if model.get("state") == "loaded" and isinstance(model.get("id"), str):
+                        loaded[model["id"]] = model["id"]
+                return loaded
         response.raise_for_status()
         loaded = {}
         for model in response.json().get("models", []):
@@ -205,19 +221,35 @@ def get_loaded_lm_studio_models(api_url):
                         loaded[key] = instance_id
         return loaded
     except (requests.RequestException, ValueError, TypeError, AttributeError, KeyError) as error:
-        raise RuntimeError(
-            f"LM Studioのロード状態を確認できません: {base_url} ({error})"
-        ) from error
+        message = f"LM Studioのロード状態を確認できません: {base_url} ({error})"
+        if _temporary_model_status_error(error):
+            raise LMStudioTemporaryStatusError(message) from error
+        raise RuntimeError(message) from error
 
 
 def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=3, cancel_event=None):
     if policy not in ("error", "wait"):
         raise ValueError("モデルの未ロード時の動作はerrorまたはwaitで指定してください")
     announced = False
+    transient_errors = 0
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError(f"モデル[{model}]のロード待機を中断しました")
-        loaded = get_loaded_lm_studio_models(api_url)
+        try:
+            loaded = get_loaded_lm_studio_models(api_url)
+            transient_errors = 0
+        except LMStudioTemporaryStatusError as error:
+            if policy == "error":
+                raise
+            transient_errors += 1
+            if transient_errors == 1 or transient_errors % 10 == 0:
+                print(
+                    f"警告: モデル[{model}]のロード状態取得に失敗"
+                    f"（{transient_errors}回連続）: {error}。再試行するのじゃ。",
+                    flush=True
+                )
+            time.sleep(poll_seconds)
+            continue
         if model in loaded:
             if announced:
                 print(f"情報: モデル[{model}]の手動ロードを確認しました")
