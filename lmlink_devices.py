@@ -83,7 +83,7 @@ def _lms_json(*arguments, required=True):
 
 def discover_plamo_models(
     excluded_devices=None, model_filter=None, expected_model_key=None,
-    allow_empty=False, return_model_key=False
+    allow_empty=False, return_model_key=False, ignore_missing_exclusions=False
 ):
     excluded = parse_excluded_devices(excluded_devices)
     loaded = _lms_json("ps")
@@ -123,6 +123,8 @@ def discover_plamo_models(
     for excluded_name in excluded:
         key = excluded_name.casefold()
         if key not in devices:
+            if ignore_missing_exclusions:
+                continue
             raise ValueError(f"除外デバイスが見つかりません: {excluded_name}")
         selected_exclusions.append(devices[key])
 
