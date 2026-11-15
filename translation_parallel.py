@@ -69,7 +69,7 @@ def translate_model_pool_batches(
     stopping = threading.Event()
     for index, batch in enumerate(batches):
         batch_queue.put((index, batch))
-    worker_count = min(workers, len(batches))
+    worker_count = min(workers * len(models), len(batches))
     results = {}
     completed = 0
     start = time.monotonic()
@@ -114,7 +114,7 @@ def translate_model_pool_batches(
             print(
                 f"  進捗: {completed}/{len(keys)} ({percent:.1f}%) "
                 f"- 残り予想: {estimate} - 並列: {worker_count} "
-                f"- 使用中: {label} [{model}]"
+                f"(最大{workers}/モデル) - 使用中: {label} [{model}]"
             )
         for future in futures:
             future.result()
