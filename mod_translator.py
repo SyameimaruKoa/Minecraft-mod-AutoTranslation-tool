@@ -439,7 +439,7 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                     continue
                 if not re.fullmatch(r"[a-z]{2,3}(?:_[a-z0-9]{2,8})?", locale):
                     continue
-                if language_code_from_path(file) == "ja":
+                if language_code_from_path(file) == "ja" or locale == "en_ud":
                     continue
                 if not is_language_resource_path(file, ext, is_shader_mode):
                     continue
@@ -822,7 +822,7 @@ def mask_plamo_format_tokens(source, ignored=()):
 def plamo_output_is_not_russian(value):
     if not isinstance(value, str):
         return False
-    has_cyrillic = re.search(r"[\u0400-\u052f]", value) is not None
+    has_cyrillic = re.search(r"[\u0400-\u04ff]", value) is not None
     has_japanese = re.search(r"[\u3040-\u30ff\u3400-\u9fff]", value) is not None
     return not has_cyrillic or has_japanese
 
@@ -1399,7 +1399,7 @@ def translate_with_plamo(
                             if not is_valid_translation(masked_source, result):
                                 raise ValueError("空の翻訳結果、またはエラー文字列")
                             if not plamo_output_is_not_russian(result):
-                                raise ValueError("ロシア語の出力を検出。日本語へ再翻訳します")
+                                raise ValueError("キリル文字のみの出力を検出。日本語へ再翻訳します")
                             if not plamo_format_is_preserved(masked_source, result):
                                 if protected or "0.8b" in model.lower():
                                     print("警告: 書式保護に失敗。無効な同一条件の再試行は省略")
@@ -1918,6 +1918,22 @@ class ModTranslator:
         scan_plan, scan_stats = scanner.scan(
             files, extract_lang_files, detect_pack_format
         )
+        if self.engine == "plamo":
+            obsolete_failures = [
+                key for key, record in self.plamo_failures.items()
+                if isinstance(record, dict)
+                and record.get("mod") in files
+                and isinstance(record.get("lang_path"), str)
+                and os.path.splitext(os.path.basename(record["lang_path"].replace("\\", "/")))[0].casefold() == "en_ud"
+            ]
+            if obsolete_failures:
+                for key in obsolete_failures:
+                    del self.plamo_failures[key]
+                save_json(self.plamo_failure_file, self.plamo_failures)
+                print(
+                    f"情報: 逆さ英語en_ud由来の古い翻訳失敗記録を"
+                    f"{len(obsolete_failures)}件整理しました"
+                )
         total_files = len(scan_plan)
         print(
             f"事前スキャン完了: {total_files} Mod / "
