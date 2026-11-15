@@ -12,7 +12,7 @@ import math
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
-from mod_scan_cache import ModScanCache, TranslationSpeedProfile
+from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA
 from dynamic_plamo_pool import translate_dynamic_model_pool_batches, PLaMoUnavailableError
 from plamo_hosts import parse_plamo_hosts, available_plamo_hosts
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
@@ -1906,7 +1906,9 @@ class ModTranslator:
         pending_by_language = {}
         total_unique = 0
         processed_unique = 0
+        global_translation_start = time.monotonic()
         speed_profile = None
+        global_eta = None
         if self.engine == "plamo":
             for filename, lang_files, _ in scan_plan:
                 for lang_path, content in lang_files.items():
@@ -1926,14 +1928,18 @@ class ModTranslator:
                 self.plamo_hosts if self.plamo_pool_from_hosts else self.plamo_models,
                 self.workers
             )
-            previous_eta = speed_profile.estimate(total_unique)
+            global_eta = TranslationETA(
+                total_unique, speed_profile.seconds_per_item
+            )
+            previous_eta, predicted_finish = global_eta.estimate(0)
             estimate = (
                 format_time(previous_eta) if previous_eta is not None
                 else "実測速度なし（翻訳開始後に算出）"
             )
             print(
                 f"翻訳対象: {total_unique} ユニーク項目 / "
-                f"全体の予測時間: {estimate}"
+                f"全体の予測時間: {estimate} / "
+                f"完了予定: {predicted_finish or '計測中'}"
             )
 
         print(f"対象ファイル数: {total_files}")
@@ -1965,7 +1971,6 @@ class ModTranslator:
                         if self.plamo_context:
                             base_context += "\n" + self.plamo_context
 
-                        file_translation_start = time.monotonic()
                         planned_unique = pending_by_language[(filename, lang_path)]
                         last_global_progress = -16
 
@@ -1974,15 +1979,8 @@ class ModTranslator:
                             if completed < last_global_progress + 16 and completed != total:
                                 return
                             last_global_progress = completed
-                            remaining = max(0, total_unique - processed_unique - completed)
-                            elapsed = max(time.monotonic() - file_translation_start, 0)
-                            observed_rate = (
-                                elapsed / completed if completed
-                                else speed_profile.seconds_per_item
-                            )
-                            estimated = (
-                                round(remaining * observed_rate)
-                                if observed_rate is not None else None
+                            estimated, finish = global_eta.estimate(
+                                processed_unique + completed
                             )
                             label = (
                                 format_time(estimated) if estimated is not None
@@ -1991,6 +1989,7 @@ class ModTranslator:
                             print(
                                 f"  全体: {processed_unique + completed}/{total_unique} "
                                 f"ユニーク項目 - 推定残り: {label}"
+                                f" - 完了予定: {finish or '計測中'}"
                             )
 
                         translate_with_plamo(
@@ -2051,10 +2050,11 @@ class ModTranslator:
                                 )) if self.plamo_pool_from_lms or len(self.plamo_models) > 1 else None
                             )
                         )
-                        speed_profile.observe(
-                            planned_unique, time.monotonic() - file_translation_start
-                        )
                         processed_unique += planned_unique
+                        speed_profile.observe_cumulative(
+                            processed_unique,
+                            time.monotonic() - global_translation_start
+                        )
                     else:
                         print("  -> 新規翻訳項目なし。完了。")
                     translated_data = content.copy()
