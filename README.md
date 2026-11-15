@@ -261,6 +261,16 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 LM Studio公式の [LM Link REST APIの仕様](https://lmstudio.ai/docs/developer/core/lmlink) では、複数端末で同じモデルIDが使われる場合、要求は優先デバイスへ送られる。起動エラーを回避することと、同一IDの複数端末を独立して並列利用することは別じゃ。後者には端末別にアクセスできる独立したAPI接続先などが必要となる。
 
+### LM Linkクラスター（localhostのみ）
+
+**同じPLaMoの`modelKey`を保ち、端末ごとのロード済み`identifier`を別々に設定する**と、LM LinkのローカルREST経由で各IDを指定して共有キューへ参加させられる。同じ`identifier`を複数PCで共有すると優先デバイスに送信され、複数台へ分散しない。
+
+- Colab: `run_colab_server.ipynb`の設定画面で`MODEL_IDENTIFIER`を指定する。例: `plamo-3-translate-8b-colab`。空欄なら標準ID。
+- Windows GUI: `start.ps1`で`[5] このPCのPLaMoモデルIDを変更して翻訳する`を選び、提案された端末名付きIDを使う。
+- Windows CLI: `venv\\Scripts\\python.exe plamo_identifier.py --list`で一覧、`venv\\Scripts\\python.exe plamo_identifier.py --interactive`で対話変更。自動操作では`--current-id`・`--new-id`・`--yes`を使う。ロード済みPLaMoだけを変更し、既存のLFMには触れない。失敗時は元のIDで再ロードを試みる。
+- 出力先の`plamo_cache.json`は同じ`modelKey`の端末間で共有できる。追加・離脱した端末ごとの推論速度を累積計測し、稼働数の変化を全体ETAへ反映する。
+- 端末別IDの推論が正しく別PCに到達することは実機LM Linkで確認してくれ。LM Link自体には同名モデルの要求を自動的に異なるPCへ分配する機能はない。
+
 ### 同じモデルIDの複数PCで実際に並列推論する
 
 LM Linkの単一REST接続先では、複数端末で同じIDを使う場合に優先デバイスへルーティングされる。**同じIDのまま複数PCへ確実に分散させる場合は、PCごとの独立したLM Studio APIアドレスを指定する**。
@@ -288,6 +298,7 @@ PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）�
 - **事前スキャン:** 翻訳前に全Modの言語ファイルを検査し、残りのユニーク翻訳件数と全体の推定時間を表示する。解析結果は出力先の`mod_scan_cache.json`に保存し、次回以降はサイズ・更新日時が変わらないModを再解析しない。追加・更新したModだけを新規解析し、削除したModはスキャン結果から除外する。既存の翻訳キャッシュは引き続き独立して判定する。
 - **速度履歴・完了予定:** `plamo_speed.json`に使用モデルとモデルごとの同時実行数に対応した実測速度を保存する。再開時は前回の実測値から開始前に予測時間と完了予定日時を表示する。処理中はMod単位で計測をリセットせず、全Modの累積進捗と実測速度を用いて残り時間・完了予定日時を更新する。
 - **キャッシュ:** PLaMo専用`plamo_cache.json`にMod・キー・モデル・用語集・文脈ごとに保存する。翻訳が1件成功するたびに保存するので途中でサーバーが切れてもそれまでの訳文が残る。既存`trans_cache.json`は従来のエンジン用として保持する。
+- **翻訳言語:** Modの同一名前空間では日本語以外の言語ファイルから項目数の多いものを翻訳元に採用するため、ロシア語（`ru_ru`）などが翻訳元になる場合がある。PLaMoの出力言語は常に日本語（`ja`）。生成結果がロシア語だけなら再翻訳し、同じ誤訳をキャッシュから再利用しない。
 - **既存キャッシュの継続利用:** この最適化以前の`plamo_cache.json`も読み込む。ただし以前の分割方式で生成された可能性がある`§`装飾付きの訳文だけは再翻訳し、それ以外はキャッシュを再利用する。
 
 例：用語集ファイル（`plamo_glossary.example.json`を編集して使用）

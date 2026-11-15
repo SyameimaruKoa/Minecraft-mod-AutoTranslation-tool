@@ -234,6 +234,55 @@ class LanguageSelectionTests(unittest.TestCase):
                     json.load(translated), {"a": "日本語", "b": "日本語"}
                 )
 
+    @patch("mod_translator.requests.post")
+    def test_cyrillic_only_response_is_retried_for_japanese(self, post):
+        responses = ["Камень", "石"]
+        def reply(*args, **kwargs):
+            response = Mock(status_code=200, text="")
+            response.json.return_value = {
+                "choices": [{
+                    "text": responses.pop(0), "finish_reason": "stop"
+                }]
+            }
+            return response
+        post.side_effect = reply
+        result = translate_with_plamo(
+            {"a": "Stone"}, model_name="plamo-3-translate-8b",
+            source_lang="en", history_size=0
+        )
+        self.assertEqual(result, {"a": "石"})
+        self.assertEqual(post.call_count, 2)
+        prompt = post.call_args.kwargs["json"]["prompt"]
+        self.assertIn("<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja", prompt)
+
+    def test_russian_source_still_targets_japanese(self):
+        prompt = build_plamo_prompt("Камень", source_lang="ru")
+        self.assertIn(
+            "<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ru",
+            prompt
+        )
+        self.assertIn(
+            "<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja",
+            prompt
+        )
+
+    def test_russian_only_cache_entry_is_not_accepted(self):
+        translator = ModTranslator.__new__(ModTranslator)
+        translator.plamo_settings_id = "original"
+        translator.plamo_shared_settings_id = None
+        translator.plamo_settings_ids = {"plamo": "original"}
+        translator.plamo_previous_settings_id = "older"
+        translator.plamo_legacy_settings_id = "oldest"
+        translator.repair_model = None
+        key = translator.plamo_cache_key(
+            "mod.jar", "assets/test/lang/en_us.json", "a", "Stone",
+            "original"
+        )
+        translator.plamo_cache = {key: "Камень"}
+        self.assertIsNone(translator.get_plamo_translation(
+            "mod.jar", "assets/test/lang/en_us.json", "a", "Stone"
+        ))
+
     def test_non_english_cache_key_does_not_reuse_old_entries(self):
         translator = ModTranslator.__new__(ModTranslator)
         translator.plamo_settings_id = "settings"
