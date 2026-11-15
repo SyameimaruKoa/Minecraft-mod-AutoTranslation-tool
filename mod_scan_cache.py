@@ -125,6 +125,62 @@ class TranslationETA:
         return seconds, finished.strftime("%Y-%m-%d %H:%M")
 
 
+class ClusterETA(TranslationETA):
+    def __init__(self, total, prior_seconds_per_item=None, clock=None, wall_clock=None):
+        super().__init__(total, prior_seconds_per_item, clock, wall_clock)
+        self.active = ()
+        self.workers = 1
+        self.rates = {}
+        self.sampled_items = 0
+        self.calibration = 1.0
+        self.epoch_started = self.started
+        self.epoch_items = 0
+
+    def set_active(self, models, workers):
+        updated = tuple(dict.fromkeys(models))
+        if updated == self.active and workers == self.workers:
+            return False
+        self.active = updated
+        self.workers = workers
+        self.epoch_started = self.clock()
+        self.epoch_items = 0
+        return True
+
+    def observe(self, model, items, duration):
+        if items <= 0 or duration <= 0:
+            return
+        speed = items / duration
+        old = self.rates.get(model)
+        self.rates[model] = speed if old is None else old * 0.8 + speed * 0.2
+        self.sampled_items += items
+        self.epoch_items += items
+        interval = self.clock() - self.epoch_started
+        baseline = sum(
+            self.rates[member] * self.workers
+            for member in self.active if member in self.rates
+        )
+        if interval >= 5 and self.epoch_items >= self.workers * 2 and baseline > 0:
+            ratio = min(1.5, max(0.1, self.epoch_items / interval / baseline))
+            self.calibration = self.calibration * 0.8 + ratio * 0.2
+
+    def estimate(self, completed):
+        remaining = max(0, self.total - completed)
+        if remaining == 0:
+            return 0, self.wall_clock().strftime("%Y-%m-%d %H:%M")
+        rate = sum(
+            self.rates[member] * self.workers
+            for member in self.active if member in self.rates
+        ) * self.calibration
+        if rate <= 0:
+            return super().estimate(completed)
+        if self.prior is not None:
+            weight = min(1, self.sampled_items / 16)
+            rate = rate * weight + (1 / self.prior) * (1 - weight)
+        seconds = round(remaining / rate)
+        finish = self.wall_clock() + timedelta(seconds=seconds)
+        return seconds, finish.strftime("%Y-%m-%d %H:%M")
+
+
 class TranslationSpeedProfile:
     def __init__(self, output_dir, models, workers):
         self.path = os.path.join(output_dir, "plamo_speed.json")
