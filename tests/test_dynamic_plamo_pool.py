@@ -7,10 +7,12 @@ from dynamic_plamo_pool import translate_dynamic_model_pool_batches
 
 
 def run_pool(items, translator, discover, models, **options):
+    settings = {"refresh_seconds": 0.01, "hedge_after_seconds": 0.02}
+    settings.update(options)
     return translate_dynamic_model_pool_batches(
         items, workers=1, batch_size=1, translator=translator,
         models=models, discover_models=discover, label="PLaMo",
-        refresh_seconds=0.01, hedge_after_seconds=0.02, **options
+        **settings
     )
 
 
