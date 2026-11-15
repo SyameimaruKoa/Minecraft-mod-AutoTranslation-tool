@@ -210,7 +210,7 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
 **Gemini・Ollama・LM Studio・PLaMo**で翻訳リクエストを複数同時に実行できる。Google Translateは対象外じゃ。
 
 - CLI: `--workers 2`（直接実行時の既定）。PLaMoでは`--workers auto`でLM Studio公式の`config.parallel`に同時要求数を合わせる。PowerShellの対話起動ではPLaMoのみ`auto`を既定にし、Gemini・Ollama・その他LM Studioは2並列を維持する。公式APIで並列値を確認できない場合は2並列へフォールバックする。
-- PowerShell: `.\start.ps1 -Workers 4`（既定は2）。対話メニューに質問は追加しない。
+- PowerShell: `.\start.ps1`のPLaMoは`auto`が既定。`.\start.ps1 -Workers 4`で4並列に固定できる。ほかのLLMの既定は2並列。
 - Gemini: 既存のモデル優先順位・エラー時の切替・欠落項目の再試行を維持する。並列ワーカー間でモデル切替を同期し、モデル別のAPI送信間隔を共有するため、指定数を増やしてもレート制限を超えて連投しない。
 - Ollama / LM Studio: 最大20件のJSONバッチを複数実行する。少数の項目も並列数に合わせて分割する。
 - PLaMo: 同一モデルを搭載した複数端末へモデルごとに`--workers`件まで要求を同時送信する。LM Link自動検出時は実行中もモデル一覧を定期更新し、共通キューから空いたPCが次の仕事を取得する。原文の重複排除、書式保護、修復モデル、1件ごとのキャッシュ保存を維持する。対訳履歴は並列グループ内の順序を使うため、グループをまたぐ直前の対訳は共有しない。
