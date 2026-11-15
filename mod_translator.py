@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from mod_scan_cache import ModScanCache, TranslationSpeedProfile
 from dynamic_plamo_pool import translate_dynamic_model_pool_batches, PLaMoUnavailableError
+from plamo_hosts import parse_plamo_hosts, available_plamo_hosts
 from lmlink_devices import discover_plamo_models, parse_excluded_devices, plamo_model_priority
 from plamo_repair import require_loaded_lm_studio_model, repair_plamo_translation, syntax_text_unchanged, has_japanese_translation, format_tokens_preserved, restore_ordered_format_markers
 from deep_translator import GoogleTranslator
@@ -996,7 +997,8 @@ def translate_with_plamo(
     repair_log=None, repair_stats_report=None, model_names=None,
     on_model_translation=None, on_model_repair_translation=None,
     source_lang="en", verify_model_load=True, on_failure=None,
-    validated_model_pool=False, on_progress=None, model_discovery=None
+    validated_model_pool=False, on_progress=None, model_discovery=None,
+    model_routes=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -1007,7 +1009,10 @@ def translate_with_plamo(
     if workers < 1:
         raise ValueError("並列数は1以上を指定してください")
     translation_models = parse_plamo_model_ids(model_names)
-    if translation_models and model_name and model_name not in translation_models:
+    if (
+        translation_models and model_name and model_name not in translation_models
+        and model_routes is None
+    ):
         raise ValueError("指定した--modelが--plamo-modelsの一覧に含まれていません")
     if not translation_models:
         translation_models = [model_name or resolve_plamo_model(api_url)]
@@ -1103,6 +1108,11 @@ def translate_with_plamo(
         saved_failure_callback = synchronized_callback(on_failure)
 
         def translate_group(batch, selected_model, is_active=None):
+            if model_routes is not None:
+                routed_model, routed_url = model_routes[selected_model]
+            else:
+                routed_model, routed_url = selected_model, api_url
+
             def gate(callback):
                 if callback is None or is_active is None:
                     return callback
@@ -1117,7 +1127,7 @@ def translate_with_plamo(
                 for group in batch.values() for key in group["keys"]
             }
             translated = translate_with_plamo(
-                texts, selected_model, api_url, form,
+                texts, routed_model, routed_url, form,
                 glossary=glossary, context=context, context_fn=context_fn,
                 history_size=history_size, on_translation=gate(saved_callback),
                 history_refresh=history_refresh, repair_model=repair_model,
@@ -1541,8 +1551,13 @@ class ModTranslator:
         self.api_key = args.key
         self.model_name = args.model
         self.plamo_models = parse_plamo_model_ids(getattr(args, "plamo_models", None)) if self.engine == "plamo" else []
+        self.plamo_hosts = parse_plamo_hosts(getattr(args, "plamo_hosts", None)) if self.engine == "plamo" else []
+        self.plamo_pool_from_hosts = bool(self.plamo_hosts)
         self.exclude_devices = parse_excluded_devices(getattr(args, "exclude_devices", None)) if self.engine == "plamo" else []
-        self.auto_discover_plamo = self.engine == "plamo" and hasattr(args, "exclude_devices")
+        self.auto_discover_plamo = (
+            self.engine == "plamo" and hasattr(args, "exclude_devices")
+            and not self.plamo_pool_from_hosts
+        )
         self.plamo_pool_from_lms = False
         self.plamo_model_filter = self.model_name
         self.plamo_model_key = None
@@ -1591,6 +1606,22 @@ class ModTranslator:
                 exit(1)
 
         if self.engine == "plamo":
+            if self.plamo_pool_from_hosts:
+                if self.plamo_models or self.exclude_devices:
+                    raise ValueError("--plamo-hostsは--plamo-models・--exclude-devicesと同時指定できません")
+                if not self.model_name:
+                    raise ValueError("--plamo-hostsには--modelで共通のインスタンスIDを指定してください")
+                available, self.plamo_host_signature = available_plamo_hosts(
+                    self.plamo_hosts, self.model_name
+                )
+                if not available:
+                    raise RuntimeError("使用可能なPLaMo API接続先がありません")
+                self.plamo_model_key = self.plamo_host_signature[0]
+                self.plamo_models = [self.model_name]
+                print(
+                    f"情報: 同じID[{self.model_name}]のPLaMo API接続先 "
+                    f"{len(available)}/{len(self.plamo_hosts)}台: {', '.join(available)}"
+                )
             if self.auto_discover_plamo and not self.plamo_models:
                 self.plamo_models, self.plamo_model_key = discover_plamo_models(
                     self.exclude_devices, model_filter=self.model_name,
@@ -1625,9 +1656,10 @@ class ModTranslator:
                     == _lm_studio_endpoint_base(self.repair_api_url)
                 ):
                     raise ValueError("翻訳モデルと修復モデルには異なるモデルを指定してください")
-                require_loaded_lm_studio_model(
-                    self.model_name, self.plamo_api_url, self.model_load_policy
-                )
+                if not self.plamo_pool_from_hosts:
+                    require_loaded_lm_studio_model(
+                        self.model_name, self.plamo_api_url, self.model_load_policy
+                    )
                 require_loaded_lm_studio_model(
                     self.repair_model, self.repair_api_url, self.model_load_policy
                 )
@@ -1657,7 +1689,8 @@ class ModTranslator:
                 hashlib.sha256(
                     json.dumps(shared_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest()
-                if self.plamo_pool_from_lms and self.plamo_model_key else None
+                if (self.plamo_pool_from_lms or self.plamo_pool_from_hosts)
+                and self.plamo_model_key else None
             )
             self.plamo_settings_lock = threading.RLock()
             self.plamo_settings_ids = {}
@@ -1799,6 +1832,12 @@ class ModTranslator:
     def run(self):
         print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
 
+        def refresh_direct_hosts():
+            current, _ = available_plamo_hosts(
+                self.plamo_hosts, self.model_name, self.plamo_host_signature
+            )
+            return current
+
         def refresh_translation_models():
             current = discover_plamo_models(
                 self.exclude_devices,
@@ -1845,7 +1884,9 @@ class ModTranslator:
                     pending_by_language[(filename, lang_path)] = len(pending)
                     total_unique += len(pending)
             speed_profile = TranslationSpeedProfile(
-                self.output_dir, self.plamo_models, self.workers
+                self.output_dir,
+                self.plamo_hosts if self.plamo_pool_from_hosts else self.plamo_models,
+                self.workers
             )
             previous_eta = speed_profile.estimate(total_unique)
             estimate = (
@@ -1934,9 +1975,23 @@ class ModTranslator:
                                     filename, lang_path, key, src, dst, model
                                 )) if self.plamo_pool_from_lms or len(self.plamo_models) > 1 else None
                             ),
-                            model_names=self.plamo_models if self.plamo_pool_from_lms or len(self.plamo_models) > 1 else None,
-                            validated_model_pool=self.plamo_pool_from_lms,
-                            model_discovery=refresh_translation_models if self.plamo_pool_from_lms else None,
+                            model_names=(
+                                self.plamo_hosts if self.plamo_pool_from_hosts
+                                else self.plamo_models if self.plamo_pool_from_lms or len(self.plamo_models) > 1
+                                else None
+                            ),
+                            validated_model_pool=self.plamo_pool_from_lms or self.plamo_pool_from_hosts,
+                            model_discovery=(
+                                refresh_direct_hosts if self.plamo_pool_from_hosts
+                                else refresh_translation_models if self.plamo_pool_from_lms
+                                else None
+                            ),
+                            model_routes=(
+                                {
+                                    host: (self.model_name, host + "/v1/completions")
+                                    for host in self.plamo_hosts
+                                } if self.plamo_pool_from_hosts else None
+                            ),
                             repair_model=self.repair_model,
                             repair_api_url=self.repair_api_url,
                             source_lang=language_code_from_path(lang_path),
@@ -2101,6 +2156,7 @@ if __name__ == "__main__":
     parser.add_argument("--key", help="Gemini APIキー")
     parser.add_argument("--model", help="使用モデル名（PLaMoはLM StudioのモデルID、省略時は自動検出）")
     parser.add_argument("--plamo-models", help="PLaMo専用: 翻訳モデルIDの明示指定（旧方式・互換性用）")
+    parser.add_argument("--plamo-hosts", help="PLaMo専用: 同じモデルIDを持つ独立LM Studio APIのURL（カンマ区切り）")
     parser.add_argument("--exclude-devices", default=None, help="PLaMo専用: LM Linkで除外するデバイス名またはID（カンマ区切り、未指定ですべて）")
     parser.add_argument("--plamo-api-url", default=PLAMO_API_URL, help="PLaMoのCompletions API URL")
     parser.add_argument("--plamo-form", choices=["plain", "polite"], default="plain", help="PLaMoの日本語文体")
@@ -2120,6 +2176,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
         parser.error("--plamo-models は--engine plamo専用です")
+    if args.plamo_hosts and args.engine != "plamo":
+        parser.error("--plamo-hosts は--engine plamo専用です")
+    if args.plamo_hosts and not args.model:
+        parser.error("--plamo-hosts には --model が必要です")
+    if args.plamo_hosts and (args.plamo_models or args.exclude_devices):
+        parser.error("--plamo-hosts は--plamo-models・--exclude-devicesと同時指定できません")
+    if args.plamo_hosts:
+        try:
+            parse_plamo_hosts(args.plamo_hosts)
+        except ValueError as error:
+            parser.error(str(error))
     if args.exclude_devices and args.engine != "plamo":
         parser.error("--exclude-devices は--engine plamo専用です")
     if args.exclude_devices and args.plamo_models:

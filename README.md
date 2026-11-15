@@ -260,6 +260,21 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 LM Studio公式の [LM Link REST APIの仕様](https://lmstudio.ai/docs/developer/core/lmlink) では、複数端末で同じモデルIDが使われる場合、要求は優先デバイスへ送られる。起動エラーを回避することと、同一IDの複数端末を独立して並列利用することは別じゃ。後者には端末別にアクセスできる独立したAPI接続先などが必要となる。
 
+### 同じモデルIDの複数PCで実際に並列推論する
+
+LM Linkの単一REST接続先では、複数端末で同じIDを使う場合に優先デバイスへルーティングされる。**同じIDのまま複数PCへ確実に分散させる場合は、PCごとの独立したLM Studio APIアドレスを指定する**。
+
+```powershell
+python mod_translator.py --engine plamo --model plamo-3-translate-8b --plamo-hosts "http://127.0.0.1:1234,http://100.64.0.2:1234" --repair-model lfm3-1.7b --workers 2 --input "C:\Minecraft\mods" --output "Output_Pack"
+```
+
+- `--plamo-hosts`はそれぞれ独立したLM Studio APIのURLをカンマで指定する。指定先ではAPIサーバーが起動し、Windowsから到達できる必要がある。例の`100.64.0.2`は実際にアクセスできる端末のプライベートIPへ置き換える。
+- 全接続先で**同じ`--model`のインスタンスID**と、同じ`modelKey`・量子化形式・ファイルサイズを確認する。端末ごとのID変更は不要。異なるモデルは混ぜない。
+- 各接続先へ`--workers`件まで並列リクエストを送り、速度差は共有キューで吸収する。動作中の接続先の復帰・離脱も検出する。追加の接続先は次回起動時に`--plamo-hosts`へ含める必要がある。
+- 構文修復用LFMは従来どおり`--repair-api-url`を使い、この分散対象には含めない。
+- `--plamo-hosts`は`--exclude-devices`および`--plamo-models`との併用不可。未指定なら従来のLM Link自動検出を使う。
+- LM Linkは他のアプリ向けに端末のHTTPサーバーを公開する機能ではない。Colabで同じ方式を使用するには、別途Windowsから到達できるプライベート接続が必要じゃ。
+
 ### PLaMo 3 Translateの翻訳品質を高める設定
 
 PLaMo 3 Translate公式の**参考文脈（context）・用語集（glossary）・対訳履歴（translation history）**を、`/v1/completions`へ送るPFML3に組み込んでおる。LM Studioはこれまでどおり利用可能じゃ。
