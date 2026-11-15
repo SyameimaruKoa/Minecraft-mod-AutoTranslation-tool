@@ -82,6 +82,7 @@ def translate_dynamic_model_pool_batches(
                 completions.put((index, assignment, translated, None, time.monotonic() - began))
             except Exception as error:
                 completions.put((index, assignment, None, error, time.monotonic() - began))
+                return
 
     def reconcile(discovered):
         if not isinstance(discovered, (list, tuple)):
