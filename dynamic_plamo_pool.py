@@ -185,15 +185,19 @@ def translate_dynamic_model_pool_batches(
             with condition:
                 if attempts.get(index) is not assignment:
                     continue
-                del attempts[index]
-                assignment["token"].clear()
-                condition.notify_all()
             if error is not None:
                 refresh()
                 with condition:
-                    if assignment["model"] not in active:
+                    if attempts.get(index) is not assignment:
                         continue
+                    del attempts[index]
+                    assignment["token"].clear()
+                    condition.notify_all()
                 raise error
+            with condition:
+                del attempts[index]
+                assignment["token"].clear()
+                condition.notify_all()
             completed_batches.add(index)
             model = assignment["model"]
             results.update({
