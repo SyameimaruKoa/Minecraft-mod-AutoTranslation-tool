@@ -99,6 +99,56 @@ class ModScanCacheTests(unittest.TestCase):
                 result[1][1], {"assets/demo/lang/en_us.json": {"a": "Wood"}}
             )
 
+    @patch("mod_translator.requests.post")
+    def test_en_ud_failure_is_cleared_and_output_replaced_from_english(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            mods, output = root / "mods", root / "output"
+            mods.mkdir()
+            with zipfile.ZipFile(mods / "mechanism.jar", "w") as archive:
+                archive.writestr(
+                    "assets/mekanism/lang/en_us.json",
+                    json.dumps({"a": "Stone"})
+                )
+                archive.writestr(
+                    "assets/mekanism/lang/en_ud.json",
+                    json.dumps({"a": "ǝuoʇS", "b": "Ԁ ʍǝԀ"})
+                )
+            old_failure_key = json.dumps([
+                "mechanism.jar", "assets/mekanism/lang/en_ud.json", "a"
+            ], ensure_ascii=False)
+            output.mkdir()
+            (output / "plamo_failures.json").write_text(
+                json.dumps({old_failure_key: {
+                    "mod": "mechanism.jar", "lang_path": "assets/mekanism/lang/en_ud.json",
+                    "key": "a", "source": "ǝuoʇS"
+                }}, ensure_ascii=False), encoding="utf-8"
+            )
+            output_lang = output / "assets" / "mekanism" / "lang" / "ja_jp.json"
+            output_lang.parent.mkdir(parents=True)
+            output_lang.write_text(
+                json.dumps({"a": "ǝuoʇS"}), encoding="utf-8"
+            )
+            response = Mock(status_code=200, text="")
+            response.json.return_value = {
+                "choices": [{"text": "石", "finish_reason": "stop"}]
+            }
+            post.return_value = response
+            ModTranslator(plamo_args(mods, output)).run()
+            self.assertEqual(post.call_count, 1)
+            self.assertEqual(
+                json.loads(output_lang.read_text(encoding="utf-8")),
+                {"a": "石"}
+            )
+            self.assertEqual(
+                json.loads((output / "plamo_failures.json").read_text(encoding="utf-8")),
+                {}
+            )
+            self.assertIn(
+                "<|plamo:val|>en<|plamo:msg|>Stone",
+                post.call_args.kwargs["json"]["prompt"]
+            )
+
     def test_updated_and_removed_mods_invalidate_only_their_cache_entries(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
