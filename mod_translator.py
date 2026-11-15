@@ -984,7 +984,7 @@ def translate_with_plamo(
     model_load_policy="wait", on_repair_translation=None, workers=1, show_progress=True,
     repair_log=None, repair_stats_report=None, model_names=None,
     on_model_translation=None, on_model_repair_translation=None,
-    source_lang="en", verify_model_load=True
+    source_lang="en", verify_model_load=True, on_failure=None
 ):
     """公式PFML3と過去の対訳を使い、品質と書式を保ちながら翻訳する。"""
     translated_results = {}
@@ -1079,6 +1079,7 @@ def translate_with_plamo(
         saved_repair_callback = synchronized_callback(on_repair_translation)
         saved_model_callback = synchronized_callback(on_model_translation)
         saved_model_repair_callback = synchronized_callback(on_model_repair_translation)
+        saved_failure_callback = synchronized_callback(on_failure)
 
         def translate_group(batch, selected_model):
             texts = {
@@ -1097,7 +1098,8 @@ def translate_with_plamo(
                 repair_stats_report=record_group_stats,
                 on_model_translation=saved_model_callback,
                 on_model_repair_translation=saved_model_repair_callback,
-                source_lang=source_lang, verify_model_load=False
+                source_lang=source_lang, verify_model_load=False,
+                on_failure=saved_failure_callback
             )
             return {
                 canonical: translated[canonical]
@@ -1141,11 +1143,38 @@ def translate_with_plamo(
         else:
             print(message)
 
+    def report_failure(original, keys, draft, raw_output, diagnostics, reason, repaired=None):
+        record = {
+            "source": original,
+            "plamo_draft": draft,
+            "plamo_response": raw_output,
+            "translation_model": model,
+            "repair_model": repair_model,
+            "repair_response": diagnostics.get("response_content"),
+            "repair_finish_reason": diagnostics.get("finish_reason"),
+            "repair_error": diagnostics.get("error"),
+            "reason": reason
+        }
+        emit_repair_log(
+            f"  修復[失敗・原文維持]: {reason}\n"
+            f"    翻訳キー: {json.dumps(keys, ensure_ascii=False)}\n"
+            f"    原文: {json.dumps(original, ensure_ascii=False)}\n"
+            f"    PLaMoの失敗訳: {json.dumps(draft, ensure_ascii=False)}\n"
+            f"    PLaMo生応答: {json.dumps(raw_output, ensure_ascii=False)}\n"
+            f"    LFM生応答: {json.dumps(record['repair_response'], ensure_ascii=False)}\n"
+            f"    LFM終了理由: {json.dumps(record['repair_finish_reason'], ensure_ascii=False)}\n"
+            f"    LFMエラー: {json.dumps(record['repair_error'], ensure_ascii=False)}\n"
+            f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}"
+        )
+        if on_failure is not None:
+            for key in keys:
+                on_failure(key, dict(record))
+
     def collect_completed_repairs(wait_all=False):
         remaining = []
-        for original, keys, future, draft in pending_repairs:
+        for original, keys, future, draft, raw_output, diagnostics in pending_repairs:
             if not wait_all and not future.done():
-                remaining.append((original, keys, future, draft))
+                remaining.append((original, keys, future, draft, raw_output, diagnostics))
                 continue
             failure_reason = None
             try:
@@ -1182,10 +1211,9 @@ def translate_with_plamo(
                         if isinstance(repaired, str) and not plamo_format_is_preserved(original, repaired)
                         else "修復結果なし・不正な翻訳"
                     )
-                emit_repair_log(
-                    f"  修復[失敗・原文維持]: {failure_reason}\n"
-                    f"    原文: {json.dumps(original, ensure_ascii=False)}\n"
-                    f"    修復結果: {json.dumps(repaired, ensure_ascii=False)}"
+                report_failure(
+                    original, keys, draft, raw_output, diagnostics, failure_reason,
+                    repaired
                 )
         pending_repairs[:] = remaining
 
@@ -1218,6 +1246,7 @@ def translate_with_plamo(
                 raise ValueError("PLaMoのcontextにPFML3制御トークンは使用できません")
             translated_value = None
             rejected_for_repair = None
+            raw_plamo_response = None
             if re.search(r"\r\n|\r|\n|\\n", source):
                 translated_value = translate_plamo_multiline_glossary(
                     source, model, api_url, form, entry_context, glossary,
@@ -1276,6 +1305,7 @@ def translate_with_plamo(
                                 if payload["max_tokens"] < 4096:
                                     payload["max_tokens"] = min(4096, payload["max_tokens"] * 2)
                                 raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
+                            raw_plamo_response = choice.get("text")
                             translated = choice["text"].strip()
                             result = prefix + translated + suffix
                             rejected_for_repair = result
@@ -1322,13 +1352,15 @@ def translate_with_plamo(
 
             if translated_value is None:
                 if repair_executor and has_japanese_translation(rejected_for_repair):
+                    diagnostics = {}
                     pending_repairs.append((
                         source, source_keys,
                         repair_executor.submit(
                             repair_plamo_translation, source, rejected_for_repair,
-                            repair_model, repair_api_url, model_load_policy, repair_stop
+                            repair_model, repair_api_url, model_load_policy, repair_stop,
+                            diagnostics
                         ),
-                        rejected_for_repair
+                        rejected_for_repair, raw_plamo_response, diagnostics
                     ))
                     repair_stats["submitted"] += 1
                     emit_repair_log(
@@ -1336,7 +1368,10 @@ def translate_with_plamo(
                         f"{json.dumps(source, ensure_ascii=False)[:140]}"
                     )
                 else:
-                    print(f"警告: 翻訳できないため原文を維持します: {source[:80]}")
+                    report_failure(
+                        source, source_keys, rejected_for_repair, raw_plamo_response,
+                        {}, "補助モデルを利用できない・修復対象の日本語本文がない"
+                    )
             else:
                 for current_key in source_keys:
                     translated_results[current_key] = translated_value
@@ -1562,6 +1597,9 @@ class ModTranslator:
                 raise ValueError("contextファイルにPFML3制御トークンは使用できません")
             self.plamo_cache_file = os.path.join(self.output_dir, "plamo_cache.json")
             self.plamo_cache = load_json(self.plamo_cache_file)
+            self.plamo_failure_file = os.path.join(self.output_dir, "plamo_failures.json")
+            self.plamo_failures = load_json(self.plamo_failure_file)
+            self.plamo_failure_announced = False
             options = {
                 "model": self.model_name, "form": self.plamo_form,
                 "glossary": self.plamo_glossary, "context": self.plamo_context,
@@ -1633,11 +1671,34 @@ class ModTranslator:
                 return self.plamo_cache[previous_key]
         return None
 
+    def plamo_failure_key(self, filename, lang_path, key):
+        return json.dumps([filename, lang_path, key], ensure_ascii=False)
+
+    def save_plamo_failure(self, filename, lang_path, key, record):
+        failure_key = self.plamo_failure_key(filename, lang_path, key)
+        self.plamo_failures[failure_key] = {
+            "mod": filename,
+            "lang_path": lang_path,
+            "key": key,
+            **record
+        }
+        save_json(self.plamo_failure_file, self.plamo_failures)
+        if not self.plamo_failure_announced:
+            print(f"情報: 翻訳失敗の診断を保存: {self.plamo_failure_file}")
+            self.plamo_failure_announced = True
+
+    def resolve_plamo_failure(self, filename, lang_path, key):
+        failure_key = self.plamo_failure_key(filename, lang_path, key)
+        if failure_key in self.plamo_failures:
+            del self.plamo_failures[failure_key]
+            save_json(self.plamo_failure_file, self.plamo_failures)
+
     def save_plamo_translation(self, filename, lang_path, key, source, translated, model_name=None):
         settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
         cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
+        self.resolve_plamo_failure(filename, lang_path, key)
 
     def save_plamo_repair_translation(self, filename, lang_path, key, source, translated, model_name=None):
         cache_key = self.plamo_repair_cache_key(
@@ -1645,6 +1706,7 @@ class ModTranslator:
         )
         self.plamo_cache[cache_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
+        self.resolve_plamo_failure(filename, lang_path, key)
 
     def run(self):
         print(f"翻訳開始: {self.input_dir} -> {self.output_dir}")
@@ -1711,6 +1773,9 @@ class ModTranslator:
                             source_lang=language_code_from_path(lang_path),
                             workers=self.workers,
                             model_load_policy=self.model_load_policy,
+                            on_failure=lambda key, record: self.save_plamo_failure(
+                                filename, lang_path, key, record
+                            ),
                             on_repair_translation=(
                                 None if len(self.plamo_models) > 1
                                 else lambda key, src, dst: self.save_plamo_repair_translation(

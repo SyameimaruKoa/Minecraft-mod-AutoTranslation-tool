@@ -268,7 +268,14 @@ def require_loaded_lm_studio_model(model, api_url, policy="error", poll_seconds=
         time.sleep(poll_seconds)
 
 
-def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait", cancel_event=None):
+def repair_plamo_translation(
+    source, rejected, model, api_url, load_policy="wait", cancel_event=None,
+    diagnostics=None
+):
+    if diagnostics is not None:
+        diagnostics.update({
+            "response_content": None, "finish_reason": None, "error": None
+        })
     if not has_japanese_translation(rejected):
         print("警告: PLaMoの日本語本文がないため、構文だけでは修復できません")
         return None
@@ -351,19 +358,31 @@ def repair_plamo_translation(source, rejected, model, api_url, load_policy="wait
             raise RuntimeError(
                 f"構文修復モデルのAPIエラー HTTP {response.status_code}: {response.text[:400]}"
             )
-        message = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        message = choice["message"]["content"]
+        if diagnostics is not None:
+            diagnostics["response_content"] = message
+            diagnostics["finish_reason"] = choice.get("finish_reason")
         offsets = json.loads(message)["offsets"]
         repaired = apply_syntax_offsets(japanese, syntax_tokens, offsets, allow_reordering=True)
         if repaired is None:
+            if diagnostics is not None:
+                diagnostics["error"] = "補助モデルの構文位置が不正"
             print("警告: 補助モデルの構文位置が不正なため、修復結果を不採用")
             return None
         if not syntax_text_unchanged(rejected, repaired):
+            if diagnostics is not None:
+                diagnostics["error"] = "PLaMoの日本語本文と一致しない"
             print("警告: 日本語本文の不変条件を満たさないため、修復結果を不採用")
             return None
         if not _format_matches(source, repaired):
+            if diagnostics is not None:
+                diagnostics["error"] = "構文トークンが原文と一致しない"
             print("警告: 補助モデルが構文を復元できませんでした")
             return None
         return repaired
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as error:
+        if diagnostics is not None:
+            diagnostics["error"] = str(error)
         print(f"警告: 構文修復モデルの応答を採用できません: {error}")
         return None

@@ -217,6 +217,125 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertIn("immutable_japanese", payload["messages"][1]["content"])
         self.assertNotIn("repaired_text", payload["response_format"]["json_schema"]["schema"]["properties"])
 
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="lfm")
+    @patch("plamo_repair.requests.post")
+    def test_empty_lfm_content_is_recorded_without_guessing(self, post, require):
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+        }
+        details = {}
+        result = repair_plamo_translation(
+            "Enchant %s levels", "エンチャントレベル", "lfm",
+            "http://localhost:1234/v1/chat/completions", diagnostics=details
+        )
+        self.assertIsNone(result)
+        self.assertEqual(details["response_content"], "")
+        self.assertEqual(details["finish_reason"], "length")
+        self.assertIn("Expecting value", details["error"])
+
+    @patch("plamo_repair.require_loaded_lm_studio_model", return_value="lfm")
+    @patch("plamo_repair.requests.post")
+    def test_successful_lfm_reply_is_recorded_as_raw_diagnostics(self, post, require):
+        post.return_value = Mock(status_code=200)
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": '{"offsets":[6]}'}, "finish_reason": "stop"}]
+        }
+        details = {}
+        self.assertEqual(
+            repair_plamo_translation(
+                "Enchant %s levels", "エンチャントレベル", "lfm",
+                "http://localhost:1234/v1/chat/completions", diagnostics=details
+            ),
+            "エンチャント%sレベル"
+        )
+        self.assertEqual(details["response_content"], '{"offsets":[6]}')
+        self.assertEqual(details["finish_reason"], "stop")
+        self.assertIsNone(details["error"])
+
+    @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args, **kwargs: model)
+    @patch("plamo_repair.require_loaded_lm_studio_model", side_effect=lambda model, *args, **kwargs: model)
+    @patch("mod_translator.requests.post")
+    def test_failed_repair_reports_original_draft_and_raw_response(self, post, repair_loaded, translation_loaded):
+        def respond(url, json, timeout):
+            if url.endswith("/v1/completions"):
+                return complete("エンチャントレベル")
+            reply = Mock(status_code=200)
+            reply.json.return_value = {
+                "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+            }
+            return reply
+
+        post.side_effect = respond
+        failures = []
+        output = io.StringIO()
+        with redirect_stdout(output):
+            translated = translate_with_plamo(
+                {"name": "Enchant %s levels"},
+                model_name="plamo-3-translate-8b",
+                repair_model="lfm", history_size=0,
+                on_failure=lambda key, details: failures.append((key, details))
+            )
+        self.assertEqual(translated, {})
+        self.assertEqual(len(failures), 1)
+        key, details = failures[0]
+        self.assertEqual(key, "name")
+        self.assertEqual(details["source"], "Enchant %s levels")
+        self.assertEqual(details["plamo_response"], "エンチャントレベル")
+        self.assertEqual(details["repair_response"], "")
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(details["repair_finish_reason"], "length")
+        self.assertIn("Expecting value", details["repair_error"])
+        self.assertIn('原文: "Enchant %s levels"', output.getvalue())
+        self.assertIn('PLaMo生応答: "エンチャントレベル"', output.getvalue())
+        self.assertIn('LFM生応答: ""', output.getvalue())
+
+    def test_failure_file_keeps_exact_source_then_resolves_on_success(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from mod_translator import ModTranslator
+
+        with tempfile.TemporaryDirectory() as folder:
+            opts = SimpleNamespace(
+                input=folder, output=folder, engine="plamo", key=None,
+                model="plamo-3-translate-8b", plamo_models=None,
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=3,
+                gemma_only=False, force=False, repair_model=None,
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="wait"
+            )
+            translator = ModTranslator(opts)
+            source = "Set time to %s for the next day. You are now on day %s."
+            record = {
+                "source": source,
+                "plamo_draft": "次の日の時間を設定",
+                "plamo_response": "次の日の時間を設定",
+                "translation_model": "plamo-3-translate-8b",
+                "repair_model": "lfm",
+                "repair_response": "",
+                "repair_finish_reason": "length",
+                "repair_error": "空のJSON",
+                "reason": "修復結果なし"
+            }
+            translator.save_plamo_failure(
+                "test.jar", "assets/test/lang/en_us.json", "timer", record
+            )
+            failure_path = Path(folder) / "plamo_failures.json"
+            stored = list(json.loads(failure_path.read_text(encoding="utf-8")).values())
+            self.assertEqual(len(stored), 1)
+            self.assertEqual(stored[0]["source"], source)
+            self.assertEqual(stored[0]["key"], "timer")
+            self.assertEqual(stored[0]["mod"], "test.jar")
+            self.assertEqual(stored[0]["repair_response"], "")
+            translator.save_plamo_translation(
+                "test.jar", "assets/test/lang/en_us.json", "timer", source,
+                "次の日の時間を%sに設定"
+            )
+            self.assertEqual(json.loads(failure_path.read_text(encoding="utf-8")), {})
+
     @patch("plamo_repair.require_loaded_lm_studio_model")
     @patch("plamo_repair.requests.post")
     def test_simple_prefix_suffix_formats_need_no_secondary_inference(self, post, require):
