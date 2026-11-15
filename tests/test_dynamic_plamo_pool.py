@@ -3,7 +3,9 @@ import threading
 import time
 import unittest
 
-from dynamic_plamo_pool import translate_dynamic_model_pool_batches
+from dynamic_plamo_pool import (
+    PLaMoUnavailableError, translate_dynamic_model_pool_batches
+)
 
 
 def run_pool(items, translator, discover, models, **options):
@@ -188,6 +190,34 @@ class DynamicPoolTests(unittest.TestCase):
             ), items
         )
         self.assertGreaterEqual(calls, 2)
+
+    def test_stale_initial_model_is_not_required_when_replacement_is_ready(self):
+        items = {"old-preferred": "Stone", "other": "Wood"}
+        used = []
+        def translate(batch, model, active):
+            used.append(model)
+            return batch
+        self.assertEqual(
+            run_pool(items, translate, lambda: ["replacement"],
+                     ["missing", "replacement"]), items
+        )
+        self.assertEqual(set(used), {"replacement"})
+
+    def test_unresponsive_model_is_quarantined_while_healthy_pc_continues(self):
+        items = {f"key-{i}": f"value-{i}" for i in range(12)}
+        calls = collections.Counter()
+        def translate(batch, model, active):
+            calls[model] += 1
+            if model == "bad":
+                raise PLaMoUnavailableError("connection closed")
+            time.sleep(0.003)
+            return batch
+        self.assertEqual(
+            run_pool(items, translate, lambda: ["bad", "good"],
+                     ["bad", "good"]), items
+        )
+        self.assertEqual(calls["bad"], 1)
+        self.assertGreater(calls["good"], 5)
 
     def test_active_model_failure_is_not_mistaken_for_disappearance(self):
         def fail(batch, model, active):
