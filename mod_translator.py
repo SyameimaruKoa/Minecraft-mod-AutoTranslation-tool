@@ -1652,6 +1652,13 @@ class ModTranslator:
                 "key_context": self.plamo_key_context, "format_version": 4
             }
             self.plamo_settings_options = options
+            shared_options = dict(options, model=self.plamo_model_key)
+            self.plamo_shared_settings_id = (
+                hashlib.sha256(
+                    json.dumps(shared_options, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                if self.plamo_pool_from_lms and self.plamo_model_key else None
+            )
             self.plamo_settings_lock = threading.RLock()
             self.plamo_settings_ids = {}
             for translation_model in list(self.plamo_models):
@@ -1690,10 +1697,15 @@ class ModTranslator:
             fields.append(language_code_from_path(lang_path))
         return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
-    def plamo_repair_cache_key(self, filename, lang_path, key, source, model_name=None):
+    def plamo_repair_cache_key(
+        self, filename, lang_path, key, source, model_name=None, settings_id=None
+    ):
         if model_name:
             self.register_plamo_model(model_name)
-        settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
+        settings_id = (
+            settings_id or
+            (self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id)
+        )
         fields = ["repair", settings_id, self.repair_model, self.repair_api_url,
                   filename, lang_path, key, source]
         if language_code_from_path(lang_path) != "en":
@@ -1701,6 +1713,12 @@ class ModTranslator:
         return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
     def get_plamo_translation(self, filename, lang_path, key, source):
+        if self.plamo_shared_settings_id:
+            shared_key = self.plamo_cache_key(
+                filename, lang_path, key, source, self.plamo_shared_settings_id
+            )
+            if shared_key in self.plamo_cache:
+                return self.plamo_cache[shared_key]
         for settings_id in self.plamo_settings_ids.values():
             cache_key = self.plamo_cache_key(
                 filename, lang_path, key, source, settings_id
@@ -1708,6 +1726,15 @@ class ModTranslator:
             if cache_key in self.plamo_cache:
                 return self.plamo_cache[cache_key]
         if self.repair_model:
+            if self.plamo_shared_settings_id:
+                shared_repair_key = self.plamo_repair_cache_key(
+                    filename, lang_path, key, source,
+                    settings_id=self.plamo_shared_settings_id
+                )
+                if shared_repair_key in self.plamo_cache:
+                    repaired = self.plamo_cache[shared_repair_key]
+                    if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
+                        return repaired
             for model_name in self.plamo_models:
                 repair_key = self.plamo_repair_cache_key(
                     filename, lang_path, key, source, model_name
@@ -1754,6 +1781,11 @@ class ModTranslator:
         settings_id = self.plamo_settings_ids[model_name] if model_name else self.plamo_settings_id
         cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
+        if self.plamo_shared_settings_id:
+            shared_key = self.plamo_cache_key(
+                filename, lang_path, key, source, self.plamo_shared_settings_id
+            )
+            self.plamo_cache[shared_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
@@ -1762,6 +1794,12 @@ class ModTranslator:
             filename, lang_path, key, source, model_name
         )
         self.plamo_cache[cache_key] = translated
+        if self.plamo_shared_settings_id:
+            shared_key = self.plamo_repair_cache_key(
+                filename, lang_path, key, source,
+                settings_id=self.plamo_shared_settings_id
+            )
+            self.plamo_cache[shared_key] = translated
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
