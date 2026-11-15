@@ -35,7 +35,11 @@ def find_lms_executable():
     if executable:
         return executable
     if not IS_WINDOWS:
-        return "lms"
+        for root in (Path.home() / ".lmstudio", Path.home() / ".cache" / "lm-studio"):
+            candidate = root / "bin" / "lms"
+            if candidate.is_file():
+                return str(candidate)
+        raise FileNotFoundError("LM Studio CLI (lms) が見つかりません。~/.lmstudio/bin/lmsまたはPATHを確認してください。")
 
     executable = shutil.which("lms")
     if executable:
