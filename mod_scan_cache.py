@@ -48,9 +48,11 @@ class ModScanCache:
         ):
             existing = {}
         self.files = existing.get("files", {})
+        self.japanese_files = {}
 
-    def scan(self, filenames, extract, detect_pack):
+    def scan(self, filenames, extract, detect_pack, extract_japanese=None):
         updated = {}
+        self.japanese_files = {}
         plan = []
         cached = 0
         rescanned = 0
@@ -64,6 +66,7 @@ class ModScanCache:
                 and old.get("signature") == signature
                 and isinstance(old.get("language_files"), dict)
                 and isinstance(old.get("pack_format"), int)
+                and (extract_japanese is None or isinstance(old.get("japanese_files"), dict))
             )
             if valid:
                 record = old
@@ -74,8 +77,11 @@ class ModScanCache:
                     "language_files": extract(filepath, self.shader_mode),
                     "pack_format": detect_pack(filepath)
                 }
+                if extract_japanese is not None:
+                    record["japanese_files"] = extract_japanese(filepath, self.shader_mode)
                 rescanned += 1
             updated[filename] = record
+            self.japanese_files[filename] = record.get("japanese_files", {})
             plan.append((
                 filename, record["language_files"], record["pack_format"]
             ))
