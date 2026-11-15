@@ -252,15 +252,16 @@ class LMDeviceExclusionTests(unittest.TestCase):
     @patch("mod_translator.requests.post")
     def test_validated_lm_link_pool_routes_distinct_identifiers(self, post, require):
         from mod_translator import translate_with_plamo
-        from types import SimpleNamespace
-        from threading import Lock
+        from threading import Barrier, Lock
 
         seen = []
         lock = Lock()
+        barrier = Barrier(2, timeout=3)
 
         def respond(url, json, timeout):
             with lock:
                 seen.append(json["model"])
+            barrier.wait()
             return Mock(status_code=200, text="", json=Mock(return_value={
                 "choices": [{"text": "石", "finish_reason": "stop"}]
             }))
