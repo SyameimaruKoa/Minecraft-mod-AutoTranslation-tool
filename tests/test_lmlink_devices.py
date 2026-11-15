@@ -116,6 +116,67 @@ class LMDeviceExclusionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_excluded_devices(value)
 
+    def test_windows_cli_finds_installation_without_path(self):
+        from pathlib import Path
+        from lmlink_devices import find_lms_executable
+        for location in (".lmstudio", ".cache/lm-studio"):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as folder:
+                cli = Path(folder) / location / "bin" / "lms.exe"
+                cli.parent.mkdir(parents=True)
+                cli.touch()
+                with patch("lmlink_devices.IS_WINDOWS", True), \
+                     patch("lmlink_devices.Path.home", return_value=Path(folder)), \
+                     patch("lmlink_devices.shutil.which", return_value=None):
+                    self.assertEqual(find_lms_executable(), str(cli))
+
+    def test_windows_cli_respects_custom_home_pointer(self):
+        from pathlib import Path
+        from lmlink_devices import find_lms_executable
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder) / "home"
+            custom = Path(folder) / "custom"
+            home.mkdir()
+            cli = custom / "bin" / "lms.exe"
+            cli.parent.mkdir(parents=True)
+            cli.touch()
+            (home / ".lmstudio-home-pointer").write_text(str(custom), encoding="utf-8")
+            with patch("lmlink_devices.IS_WINDOWS", True), \
+                 patch("lmlink_devices.Path.home", return_value=home), \
+                 patch("lmlink_devices.shutil.which", return_value=None):
+                self.assertEqual(find_lms_executable(), str(cli))
+
+    def test_windows_cli_uses_path_when_available(self):
+        from lmlink_devices import find_lms_executable
+        with patch("lmlink_devices.IS_WINDOWS", True), \
+             patch("lmlink_devices.shutil.which", return_value=r"C:\LM Studio\lms.exe"):
+            self.assertEqual(find_lms_executable(), r"C:\LM Studio\lms.exe")
+
+    def test_windows_cli_is_used_for_lms_ps_json(self):
+        from lmlink_devices import _lms_json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            cli = Path(folder) / ".lmstudio" / "bin" / "lms.exe"
+            cli.parent.mkdir(parents=True)
+            cli.touch()
+            with patch("lmlink_devices.IS_WINDOWS", True), \
+                 patch("lmlink_devices.Path.home", return_value=Path(folder)), \
+                 patch("lmlink_devices.shutil.which", return_value=None), \
+                 patch("lmlink_devices.subprocess.run", return_value=SimpleNamespace(
+                     returncode=0, stdout='[{"modelKey":"plamo-3-translate-8b"}]', stderr=""
+                 )) as execute:
+                self.assertEqual(_lms_json("ps")[0]["modelKey"], "plamo-3-translate-8b")
+                self.assertEqual(execute.call_args.args[0], [str(cli), "ps", "--json"])
+
+    def test_windows_cli_missing_has_actionable_error(self):
+        from pathlib import Path
+        from lmlink_devices import _lms_json
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("lmlink_devices.IS_WINDOWS", True), \
+                 patch("lmlink_devices.Path.home", return_value=Path(folder)), \
+                 patch("lmlink_devices.shutil.which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, r"lms.exe"):
+                    _lms_json("ps")
+
     def test_missing_lms_cli_is_reported(self):
         with patch("lmlink_devices.subprocess.run", side_effect=FileNotFoundError()):
             with self.assertRaisesRegex(RuntimeError, "lms ps"):
