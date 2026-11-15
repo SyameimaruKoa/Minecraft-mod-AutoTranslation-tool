@@ -173,6 +173,54 @@ class LMDeviceExclusionTests(unittest.TestCase):
         with patch("lmlink_devices._lms_json", return_value=models):
             self.assertEqual(discover_plamo_models(), ["local-8b", "remote-8b"])
 
+    def test_runtime_discovery_accepts_only_the_original_model_key(self):
+        models = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "pc-a-8b", "deviceIdentifier": "pc-a"},
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "pc-b-8b", "deviceIdentifier": "pc-b"},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "pc-c-2b", "deviceIdentifier": "pc-c"},
+            {"modelKey": "lfm/lfm3-1.7b",
+             "identifier": "repair-only", "deviceIdentifier": "pc-a"}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=models):
+            self.assertEqual(
+                discover_plamo_models(
+                    expected_model_key="pfnet/plamo-3-translate-8b",
+                    allow_empty=True
+                ), ["pc-a-8b", "pc-b-8b"]
+            )
+        with patch("lmlink_devices._lms_json", return_value=models[2:]):
+            self.assertEqual(
+                discover_plamo_models(
+                    expected_model_key="pfnet/plamo-3-translate-8b",
+                    allow_empty=True
+                ), []
+            )
+
+    def test_runtime_discovery_ignores_missing_excluded_peer(self):
+        models = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "local-8b", "deviceIdentifier": None}
+        ]
+        link = {"status": "online", "deviceName": "Windows", "peers": []}
+        with patch("lmlink_devices._lms_json", side_effect=[models, link]):
+            self.assertEqual(
+                discover_plamo_models(
+                    ["Offline-PC"], expected_model_key="pfnet/plamo-3-translate-8b",
+                    allow_empty=True, ignore_missing_exclusions=True
+                ), ["local-8b"]
+            )
+
+    def test_initial_discovery_returns_model_key_for_later_refresh(self):
+        with patch("lmlink_devices._lms_json", return_value=MODELS):
+            self.assertEqual(
+                discover_plamo_models(return_model_key=True),
+                (["plamo-local", "plamo-prestige", "plamo-21kj"],
+                 "pfnet/plamo-3-translate-8b")
+            )
+
     def test_exclude_by_device_id_or_name(self):
         with patch("lmlink_devices._lms_json", side_effect=[MODELS, LINK]):
             self.assertEqual(
@@ -225,9 +273,10 @@ class LMDeviceExclusionTests(unittest.TestCase):
                 discover_plamo_models()
 
     @patch("mod_translator.require_loaded_lm_studio_model", return_value="same-api-instance")
-    @patch("mod_translator.discover_plamo_models", return_value=[
-        "plamo-3-translate-8b", "plamo-3-translate-8b-colab"
-    ])
+    @patch("mod_translator.discover_plamo_models", return_value=(
+        ["plamo-3-translate-8b", "plamo-3-translate-8b-colab"],
+        "pfnet/plamo-3-translate-8b"
+    ))
     def test_cli_discovered_two_pcs_keep_distinct_ids_without_api_alias_remap(self, discover, require):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(
@@ -278,6 +327,60 @@ class LMDeviceExclusionTests(unittest.TestCase):
             seen, ["plamo-3-translate-8b", "plamo-3-translate-8b-colab"]
         )
         require.assert_not_called()
+
+    @patch("mod_translator.requests.post")
+    @patch("mod_translator.discover_plamo_models")
+    def test_mid_run_new_pc_uses_shared_cache_after_original_pc_returns(self, discover, post):
+        import os
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            output = os.path.join(folder, "pack")
+            os.mkdir(mods)
+            with zipfile.ZipFile(os.path.join(mods, "test.jar"), "w") as jar:
+                jar.writestr(
+                    "assets/example/lang/en_us.json",
+                    json.dumps({"item.example.stone": "Stone"})
+                )
+            args = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model=None, exclude_devices=None, plamo_models=None,
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=0,
+                gemma_only=False, force=False, repair_model=None,
+                repair_api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model_load_policy="wait"
+            )
+            model_key = "pfnet/plamo-3-translate-8b"
+            discover.side_effect = [
+                (["local-8b"], model_key),
+                ["new-colab-8b"],
+                (["local-8b"], model_key)
+            ]
+            post.return_value = Mock(status_code=200, text="")
+            post.return_value.json.return_value = {
+                "choices": [{"text": "石", "finish_reason": "stop"}]
+            }
+            original = ModTranslator(args)
+            original.run()
+            self.assertEqual(
+                post.call_args.kwargs["json"]["model"], "new-colab-8b"
+            )
+            self.assertIn("new-colab-8b", original.plamo_settings_ids)
+            cache_path = os.path.join(output, "plamo_cache.json")
+            with open(cache_path, encoding="utf-8") as file:
+                self.assertEqual(len(json.load(file)), 1)
+            resumed = ModTranslator(args)
+            self.assertNotIn("new-colab-8b", resumed.plamo_settings_ids)
+            self.assertEqual(
+                resumed.get_plamo_translation(
+                    "test.jar", "assets/example/lang/en_us.json",
+                    "item.example.stone", "Stone"
+                ), "石"
+            )
+            self.assertEqual(post.call_count, 1)
 
     def test_duplicate_or_empty_exclusion_ids_are_rejected(self):
         for value in ["21KJ,21kj", "local,", ",local", "local,,21KJ"]:
@@ -351,7 +454,9 @@ class LMDeviceExclusionTests(unittest.TestCase):
                 discover_plamo_models()
 
     @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
-    @patch("mod_translator.discover_plamo_models", return_value=["plamo-local", "plamo-prestige"])
+    @patch("mod_translator.discover_plamo_models", return_value=(
+        ["plamo-local", "plamo-prestige"], "pfnet/plamo-3-translate-8b"
+    ))
     def test_translator_auto_discovers_all_and_reuses_model_cache(self, discover, require):
         with tempfile.TemporaryDirectory() as folder:
             args = SimpleNamespace(
@@ -365,7 +470,7 @@ class LMDeviceExclusionTests(unittest.TestCase):
                 model_load_policy="wait"
             )
             translator = ModTranslator(args)
-            discover.assert_called_once_with([], model_filter=None)
+            discover.assert_called_once_with([], model_filter=None, return_model_key=True)
             self.assertEqual(translator.plamo_models, ["plamo-local", "plamo-prestige"])
             translator.save_plamo_translation(
                 "mod.jar", "assets/test/lang/en_us.json", "a", "Stone", "石",
