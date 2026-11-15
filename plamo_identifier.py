@@ -125,8 +125,8 @@ def rename_local_model(old_identifier, new_identifier):
     link_enabled = (
         isinstance(status, dict)
         and status.get("status") in ("online", "offline", "starting")
-        and "deviceDisabled" not in status.get("issues", [])
-        and "notLoggedIn" not in status.get("issues", [])
+        and "deviceDisabled" not in (status.get("issues") or [])
+        and "notLoggedIn" not in (status.get("issues") or [])
     )
     if link_enabled:
         lms("link", "disable")
@@ -140,7 +140,15 @@ def rename_local_model(old_identifier, new_identifier):
         lms("unload", old_identifier)
         try:
             lms(*new_load)
+            local_after = loaded_plamo_models()
+            if not any(
+                item["identifier"] == new_identifier
+                and not item.get("deviceIdentifier")
+                for item in local_after
+            ):
+                raise RuntimeError("新しいIDがlms psで確認できません")
         except Exception as error:
+            lms("unload", new_identifier, required=False)
             try:
                 lms(*old_load)
             except Exception as restore_error:
@@ -148,9 +156,6 @@ def rename_local_model(old_identifier, new_identifier):
                     f"新しいIDでロード失敗。旧IDの復元にも失敗しました: {restore_error}"
                 ) from error
             raise RuntimeError("新IDのロードに失敗したため旧IDへ復元しました") from error
-        local_after = loaded_plamo_models()
-        if not any(item["identifier"] == new_identifier for item in local_after):
-            raise RuntimeError("新しいIDがlms psで確認できません")
         print(f"変更完了: {old_identifier} → {new_identifier}")
     finally:
         if link_enabled:
@@ -212,16 +217,20 @@ def main():
             status = lms("link", "status", json_output=True, required=False)
             linked = (
                 isinstance(status, dict) and status.get("status") in ("online", "offline", "starting")
-                and "deviceDisabled" not in status.get("issues", [])
-                and "notLoggedIn" not in status.get("issues", [])
+                and "deviceDisabled" not in (status.get("issues") or [])
+                and "notLoggedIn" not in (status.get("issues") or [])
             )
             if linked:
                 lms("link", "disable")
             try:
-                lms("load", args.model_key, "--identifier", new_id, "-y")
-                local = loaded_plamo_models()
-                if not any(item["identifier"] == new_id and not item.get("deviceIdentifier") for item in local):
-                    raise RuntimeError("ロード後にローカルPLaMoを確認できません")
+                try:
+                    lms("load", args.model_key, "--identifier", new_id, "-y")
+                    local = loaded_plamo_models()
+                    if not any(item["identifier"] == new_id and not item.get("deviceIdentifier") for item in local):
+                        raise RuntimeError("ロード後にローカルPLaMoを確認できません")
+                except Exception:
+                    lms("unload", new_id, required=False)
+                    raise
             finally:
                 if linked:
                     lms("link", "enable")
