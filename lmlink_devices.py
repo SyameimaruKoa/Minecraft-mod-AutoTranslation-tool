@@ -126,6 +126,7 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
     ranked_models = []
     all_model_owners = {}
     selected_device_models = {}
+    selected_model_key = None
     for item in loaded:
         if not isinstance(item, dict):
             continue
@@ -158,6 +159,14 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
                     "1端末につき翻訳用PLaMoを1つだけロードしてください。"
                     "修復用LFMはこの制限の対象外です。"
                 )
+            if selected_model_key is not None and model_key != selected_model_key:
+                raise RuntimeError(
+                    "複数端末での分散翻訳には同じPLaMoモデルID（modelKey）が必要です: "
+                    f"{selected_model_key} != {model_key}。"
+                    "同じモデルを各端末でロードするか、異なるモデルの端末を除外してください。"
+                    "モデルインスタンスID（identifier）は端末ごとに異なる値が必要です。"
+                )
+            selected_model_key = model_key
             selected_device_models[device_id] = identifier
             ranked_models.append((plamo_model_priority(model_key), identifier))
 
