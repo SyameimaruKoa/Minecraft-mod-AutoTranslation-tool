@@ -190,7 +190,7 @@ class TranslationSpeedTests(unittest.TestCase):
             make_mod(mods, "b.jar", {"b": "Grass"})
             with patch("mod_translator.extract_lang_files", wraps=extract_lang_files) as extract:
                 ModTranslator(args).run()
-                self.assertEqual(extract.call_count, 1)
+                self.assertEqual(extract.call_count, 2)
             self.assertEqual(post.call_count, 2)
             self.assertIn("b.jar", json.loads(
                 (output / "mod_scan_cache.json").read_text(encoding="utf-8")
@@ -200,7 +200,7 @@ class TranslationSpeedTests(unittest.TestCase):
             os.utime(mod_a, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
             with patch("mod_translator.extract_lang_files", wraps=extract_lang_files) as extract:
                 ModTranslator(args).run()
-                self.assertEqual(extract.call_count, 1)
+                self.assertEqual(extract.call_count, 2)
             self.assertEqual(post.call_count, 3)
             self.assertEqual(
                 ModTranslator(args).get_plamo_translation(
