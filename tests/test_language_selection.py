@@ -45,6 +45,45 @@ class LanguageSelectionTests(unittest.TestCase):
             })
             self.assertEqual(len(files["assets/demo/lang/fr_fr.json"]), 3)
 
+    def test_en_ud_is_never_selected_even_with_more_entries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/mekanism/lang/en_us.json": {
+                    "a": "Stone", "b": "Wood"
+                },
+                "assets/mekanism/lang/en_ud.json": {
+                    "a": "ǝuoʇS", "b": "pooM", "c": "Ԁ ʍǝԀ"
+                }
+            })
+            selected = extract_lang_files(archive)
+            self.assertEqual(
+                selected,
+                {"assets/mekanism/lang/en_us.json": {
+                    "a": "Stone", "b": "Wood"
+                }}
+            )
+
+    def test_only_en_ud_is_not_translated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/mekanism/lang/en_ud.json": {
+                    "a": "ǝuoʇS"
+                },
+                "assets/other/lang/fr_fr.json": {
+                    "a": "Pierre"
+                }
+            })
+            self.assertEqual(
+                extract_lang_files(archive),
+                {"assets/other/lang/fr_fr.json": {"a": "Pierre"}}
+            )
+
+    def test_upside_down_letter_is_not_mistaken_for_russian(self):
+        from mod_translator import plamo_output_is_not_russian
+        self.assertTrue(plamo_output_is_not_russian("ǝsᴉɔǝɹԀ"))
+        self.assertFalse(plamo_output_is_not_russian("Камень"))
+        self.assertTrue(plamo_output_is_not_russian("石"))
+
     def test_equal_count_prefers_english_and_json(self):
         with tempfile.TemporaryDirectory() as folder:
             archive = self.make_jar(folder, {
