@@ -261,15 +261,32 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 
 LM Studio公式の [LM Link REST APIの仕様](https://lmstudio.ai/docs/developer/core/lmlink) では、複数端末で同じモデルIDが使われる場合、要求は優先デバイスへ送られる。起動エラーを回避することと、同一IDの複数端末を独立して並列利用することは別じゃ。後者には端末別にアクセスできる独立したAPI接続先などが必要となる。
 
-### LM Linkクラスター（localhostのみ）
+### LM Linkクラスター（Windows・Linux・Colab共通／localhostのみ）
 
-**同じPLaMoの`modelKey`を保ち、端末ごとのロード済み`identifier`を別々に設定する**と、LM LinkのローカルREST経由で各IDを指定して共有キューへ参加させられる。同じ`identifier`を複数PCで共有すると優先デバイスに送信され、複数台へ分散しない。
+LM StudioまたはllmsterとLM Linkが使える端末なら、OSや台数に関係なくクラスターへ参加できる。**同じ`modelKey`のPLaMoを各PCでロードし、端末ごとに異なる`identifier`を付ける**。翻訳を実行するPCが`lms ps --json`を監視し、追加・離脱した端末へ共有キューから仕事を分配する。LM Link以外のネットワーク公開は不要じゃ。
 
-- Colab: `run_colab_server.ipynb`の設定画面で`MODEL_IDENTIFIER`を指定する。例: `plamo-3-translate-8b-colab`。空欄なら標準ID。
-- Windows GUI: `start.ps1`で`[5] このPCのPLaMoモデルIDを変更して翻訳する`を選び、提案された端末名付きIDを使う。
-- Windows CLI: `venv\\Scripts\\python.exe plamo_identifier.py --list`で一覧、`venv\\Scripts\\python.exe plamo_identifier.py --interactive`で対話変更。自動操作では`--current-id`・`--new-id`・`--yes`を使う。ロード済みPLaMoだけを変更し、既存のLFMには触れない。失敗時は元のIDで再ロードを試みる。
-- 出力先の`plamo_cache.json`は同じ`modelKey`の端末間で共有できる。追加・離脱した端末ごとの推論速度を累積計測し、稼働数の変化を全体ETAへ反映する。
-- 端末別IDの推論が正しく別PCに到達することは実機LM Linkで確認してくれ。LM Link自体には同名モデルの要求を自動的に異なるPCへ分配する機能はない。
+**各Windows/Linux PCで、モデルがロード済みの場合：**
+
+```bash
+python3 plamo_identifier.py --join --yes
+```
+
+Windowsの既存仮想環境からなら`venv\\Scripts\\python.exe plamo_identifier.py --join --yes`でもよい。モデルIDは端末名と固有識別子から作るため、Windows PC・Linux PCが増えても手動で別名を考える必要はない。同じPCで再実行してもIDが同じなら変更しない。
+
+**そのPCではまだPLaMoをロードしていない場合：**
+
+```bash
+python3 plamo_identifier.py --join --model-key "pfnet/plamo-3-translate-8b-GGUF/plamo-3-translate-8b-Q4_K_M.gguf" --yes
+```
+
+`--model-key`にはそのPCの`lms ls`で確認できる**実際のモデルキー**を指定する。別のモデルを推測して選択することはない。
+
+- Windows対話メニュー: `start.ps1`の`[5] このPCをLM Link翻訳クラスターへ参加させて翻訳する`でID自動設定と翻訳開始が可能。
+- Colabの設定GUI: `run_colab_server.ipynb`の`MODEL_IDENTIFIER`で端末固有ID（例: `plamo-3-translate-8b-colab`）を指定。空欄なら従来の標準ID。
+- 各OS共通のCLI: `python3 plamo_identifier.py --list`でモデル一覧、`--interactive`で任意のIDへ変更、`--join`で端末固有IDを自動設定。必要に応じて`--current-id`・`--new-id`・`--yes`も利用できる。
+- 翻訳の実行: 参加端末すべてで翻訳ツールを動かす必要はない。任意の1台から従来どおり`--engine plamo`を実行するだけで、同じ`modelKey`のロード済み端末を5秒間隔で自動検出する。
+- 端末が離脱しても残存モデルへ未処理分を再割当し、ETAは稼働中のPC別実測速度を反映する。LFMなどの構文修復モデルは対象外。ID変更時にローカルREST APIが未起動なら公式`lms ps`の情報で再ロードし、失敗したら元のIDへ復元する。
+- 同一`identifier`を複数PCで共有するとLM Linkは優先デバイスへルーティングするため、クラスター参加コマンドで個別IDにする。実機での各端末への配送はまだ検証が必要じゃ。
 
 ### 同じモデルIDの複数PCで実際に並列推論する
 

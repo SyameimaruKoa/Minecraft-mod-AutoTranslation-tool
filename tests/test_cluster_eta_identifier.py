@@ -26,7 +26,7 @@ class IdentifierManagementTests(unittest.TestCase):
             ),
             [
                 "load", "pfnet/plamo-3-translate-8b@q4_k_m",
-                "--identifier", "plamo-colab", "--gpu", "max",
+                "--identifier", "plamo-colab",
                 "--parallel", "4", "--context-length", "8192", "-y"
             ]
         )
@@ -59,7 +59,7 @@ class IdentifierManagementTests(unittest.TestCase):
             call(
                 "load", "pfnet/plamo-3-translate-8b@q4_k_m",
                 "--identifier", "plamo-3-translate-8b-prestige",
-                "--gpu", "max", "--parallel", "2",
+                "--parallel", "2",
                 "--context-length", "8192", "-y"
             ),
             call("link", "enable")
@@ -116,7 +116,7 @@ class IdentifierManagementTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / "start.ps1"
         self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
         script = path.read_text(encoding="utf-8-sig")
-        self.assertIn('plamo_identifier.py" --interactive', script)
+        self.assertIn('plamo_identifier.py" --join --yes', script)
         self.assertIn("Get-Help", script)
 
 
