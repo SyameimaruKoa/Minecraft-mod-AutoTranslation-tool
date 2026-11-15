@@ -1,10 +1,12 @@
 import argparse
+import hashlib
 import json
 import platform
 import re
 import subprocess
-
-import requests
+import uuid
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from lmlink_devices import find_lms_executable
 
@@ -14,6 +16,17 @@ def model_identifier(value):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", identifier):
         raise ValueError("モデルIDは英数字で始まり、英数字・ハイフン・アンダースコア・ピリオドのみ使用できます")
     return identifier
+
+
+def automatic_identifier(model_key):
+    match = re.search(r"plamo-3-translate-\d+(?:\.\d+)?b", model_key.casefold())
+    if not match:
+        raise ValueError(f"PLaMoモデルを識別できません: {model_key}")
+    hostname = re.sub(r"[^a-z0-9]+", "-", platform.node().casefold()).strip("-")[:20] or "pc"
+    fingerprint = hashlib.sha256(
+        f"{platform.node()}:{uuid.getnode():012x}".encode("utf-8")
+    ).hexdigest()[:8]
+    return f"{match.group()}-{hostname}-{fingerprint}"
 
 
 def lms(*arguments, json_output=False, required=True):
@@ -49,24 +62,37 @@ def loaded_plamo_models():
 
 
 def load_configuration(identifier):
-    response = requests.get("http://127.0.0.1:1234/api/v1/models", timeout=10)
-    response.raise_for_status()
-    result = response.json()
-    matching = [
-        (model, instance)
-        for model in result.get("models", [])
-        if isinstance(model, dict) and model.get("type") == "llm"
-        for instance in model.get("loaded_instances", [])
-        if isinstance(instance, dict) and instance.get("id") == identifier
+    local = [
+        item for item in loaded_plamo_models()
+        if item["identifier"] == identifier and not item.get("deviceIdentifier")
     ]
-    if len(matching) != 1:
-        raise RuntimeError(f"ローカルPLaMoのロード設定を一意に取得できません: {identifier}")
-    model, instance = matching[0]
-    return model.get("selected_variant") or model["key"], instance.get("config") or {}
+    if len(local) != 1:
+        raise RuntimeError(f"このPCのPLaMoを一意に取得できません: {identifier}")
+    fallback = {
+        "parallel": local[0].get("parallel"),
+        "context_length": local[0].get("contextLength")
+    }
+    try:
+        with urlopen("http://127.0.0.1:1234/api/v1/models", timeout=5) as response:
+            inventory = json.load(response)
+        matching = [
+            (model, instance)
+            for model in inventory.get("models", [])
+            if isinstance(model, dict) and model.get("type") == "llm"
+            for instance in model.get("loaded_instances", [])
+            if isinstance(instance, dict) and instance.get("id") == identifier
+        ]
+        if len(matching) == 1:
+            model, instance = matching[0]
+            return model.get("selected_variant") or model["key"], instance.get("config") or {}
+    except (URLError, OSError, TimeoutError, ValueError, TypeError):
+        pass
+    print("情報: REST APIでロード設定を取得できないため、公式lms psの情報を使用します")
+    return local[0]["modelKey"], fallback
 
 
 def make_load_command(model_key, identifier, config):
-    command = ["load", model_key, "--identifier", identifier, "--gpu", "max"]
+    command = ["load", model_key, "--identifier", identifier]
     for flag, name in (
         ("--parallel", "parallel"),
         ("--context-length", "context_length")
@@ -96,8 +122,11 @@ def rename_local_model(old_identifier, new_identifier):
         raise RuntimeError(f"そのモデルIDは既にLM Link上で使用されています: {new_identifier}")
 
     status = lms("link", "status", json_output=True, required=False)
-    link_enabled = isinstance(status, dict) and status.get("status") in (
-        "online", "connected", "connecting", "enabled"
+    link_enabled = (
+        isinstance(status, dict)
+        and status.get("status") in ("online", "offline", "starting")
+        and "deviceDisabled" not in status.get("issues", [])
+        and "notLoggedIn" not in status.get("issues", [])
     )
     if link_enabled:
         lms("link", "disable")
@@ -147,6 +176,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="ローカルPLaMoのインスタンスIDだけを変更し、LM Linkクラスターから個別に指定できるようにする"
     )
+    parser.add_argument("--join", action="store_true", help="このWindows/Linux PCをLM Linkクラスターへ参加。端末固有のIDを自動設定")
+    parser.add_argument("--model-key", help="参加対象PLaMoのmodelKey。未ロードの場合はこのモデルをロードする")
     parser.add_argument("--current-id", help="変更前のローカルPLaMoインスタンスID")
     parser.add_argument("--new-id", help="変更後の一意なインスタンスID")
     parser.add_argument("--list", action="store_true", help="ロード済みPLaMoと現在のIDを一覧表示")
@@ -160,6 +191,54 @@ def main():
                 f"{item['identifier']} / {item['modelKey']} / "
                 f"{item.get('deviceIdentifier') or 'local'}"
             )
+        return
+    if args.join:
+        selected = [
+            item for item in models
+            if not item.get("deviceIdentifier")
+            and (not args.model_key or item["modelKey"] == args.model_key)
+        ]
+        if args.current_id:
+            selected = [item for item in selected if item["identifier"] == args.current_id]
+        if not selected:
+            if not args.model_key or args.current_id:
+                parser.error("このPCにロード済みのPLaMoがありません。--model-keyを指定してロードしてください")
+            new_id = model_identifier(args.new_id or automatic_identifier(args.model_key))
+            if any(item["identifier"] == new_id for item in models):
+                parser.error(f"モデルIDが既に使用されています: {new_id}")
+            if not args.yes and input(f"{args.model_key}を{new_id}としてロードするか？ [y/N]: ").strip().casefold() != "y":
+                print("参加を中止しました")
+                return
+            status = lms("link", "status", json_output=True, required=False)
+            linked = (
+                isinstance(status, dict) and status.get("status") in ("online", "offline", "starting")
+                and "deviceDisabled" not in status.get("issues", [])
+                and "notLoggedIn" not in status.get("issues", [])
+            )
+            if linked:
+                lms("link", "disable")
+            try:
+                lms("load", args.model_key, "--identifier", new_id, "-y")
+                local = loaded_plamo_models()
+                if not any(item["identifier"] == new_id and not item.get("deviceIdentifier") for item in local):
+                    raise RuntimeError("ロード後にローカルPLaMoを確認できません")
+            finally:
+                if linked:
+                    lms("link", "enable")
+            print(f"クラスター参加完了: {new_id}")
+            return
+        if len(selected) != 1:
+            parser.error("ロード済みPLaMoが複数あります。--model-keyか--current-idを指定してください")
+        current = selected[0]["identifier"]
+        new_id = model_identifier(args.new_id or automatic_identifier(selected[0]["modelKey"]))
+        if current == new_id:
+            print(f"クラスター参加済み: {new_id}")
+            return
+        if not args.yes and input(f"{current} → {new_id} に変更するか？ [y/N]: ").strip().casefold() != "y":
+            print("変更を中止しました")
+            return
+        rename_local_model(current, new_id)
+        print(f"クラスター参加完了: {new_id}")
         return
     current = args.current_id or choose_local_model(models)
     if not args.new_id:
