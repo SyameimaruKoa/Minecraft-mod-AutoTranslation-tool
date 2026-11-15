@@ -63,10 +63,6 @@ class ModScanCache:
                 isinstance(old, dict)
                 and old.get("signature") == signature
                 and isinstance(old.get("language_files"), dict)
-                and not any(
-                    os.path.splitext(os.path.basename(path.replace("\\", "/")))[0].casefold() == "en_ud"
-                    for path in old["language_files"]
-                )
                 and isinstance(old.get("pack_format"), int)
             )
             if valid:
