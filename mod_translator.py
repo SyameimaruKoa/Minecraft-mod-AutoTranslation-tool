@@ -2035,7 +2035,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
-    parser.add_argument("--workers", type=int, default=2, help="LLMエンジンの同時実行数（既定2、1で逐次翻訳）")
+    parser.add_argument("--workers", type=int, default=2, help="同時実行数（既定2、複数PLaMoでは各モデル当たりの並列数）")
 
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
