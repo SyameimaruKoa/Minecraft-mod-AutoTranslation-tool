@@ -48,19 +48,89 @@ class LMDeviceExclusionTests(unittest.TestCase):
     def test_larger_loaded_models_have_higher_priority(self):
         shuffled = [
             {"modelKey": "pfnet/plamo-3-translate-0.8b",
-             "identifier": "small", "deviceIdentifier": None},
+             "identifier": "small", "deviceIdentifier": "device-small"},
             {"modelKey": "pfnet/plamo-3-translate-8b",
-             "identifier": "large", "deviceIdentifier": None},
+             "identifier": "large", "deviceIdentifier": "device-large"},
             {"modelKey": "pfnet/plamo-3-translate-2b",
-             "identifier": "medium", "deviceIdentifier": None},
+             "identifier": "medium", "deviceIdentifier": "device-medium"},
             {"modelKey": "pfnet/plamo-3-translate-31b",
-             "identifier": "largest", "deviceIdentifier": None},
+             "identifier": "largest", "deviceIdentifier": "device-largest"},
         ]
         with patch("lmlink_devices._lms_json", return_value=shuffled):
             self.assertEqual(
                 discover_plamo_models(),
                 ["largest", "large", "medium", "small"]
             )
+
+    def test_same_8b_on_two_pcs_is_distributed(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "pc-a-8b", "deviceIdentifier": "pc-a"},
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "pc-b-8b", "deviceIdentifier": "pc-b"}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=loaded):
+            self.assertEqual(discover_plamo_models(), ["pc-a-8b", "pc-b-8b"])
+
+    def test_two_plamo_on_same_remote_pc_are_rejected(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "remote-8b", "deviceIdentifier": "pc-a"},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "remote-2b", "deviceIdentifier": "pc-a"}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=loaded):
+            with self.assertRaisesRegex(RuntimeError, "同一端末"):
+                discover_plamo_models()
+
+    def test_two_plamo_on_same_local_pc_are_rejected(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "local-8b", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "local-2b", "deviceIdentifier": None}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=loaded):
+            with self.assertRaisesRegex(RuntimeError, "1端末につき"):
+                discover_plamo_models()
+
+    def test_local_repair_lfm_is_not_second_translation_model(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "local-8b", "deviceIdentifier": None},
+            {"modelKey": "lfm/lfm3-1.7b",
+             "identifier": "local-lfm", "deviceIdentifier": None}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=loaded):
+            self.assertEqual(discover_plamo_models(), ["local-8b"])
+
+    def test_explicit_model_filter_overrides_auto_selection(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "local-8b", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "local-2b", "deviceIdentifier": None}
+        ]
+        with patch("lmlink_devices._lms_json", return_value=loaded):
+            self.assertEqual(
+                discover_plamo_models(model_filter="local-8b"), ["local-8b"]
+            )
+
+    def test_excluded_pc_with_two_plamo_is_not_selected(self):
+        loaded = [
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "local-8b", "deviceIdentifier": None},
+            {"modelKey": "pfnet/plamo-3-translate-8b",
+             "identifier": "remote-8b", "deviceIdentifier": "pc-a"},
+            {"modelKey": "pfnet/plamo-3-translate-2b",
+             "identifier": "remote-2b", "deviceIdentifier": "pc-a"}
+        ]
+        link = {
+            "status": "online", "deviceName": "local-machine",
+            "peers": [{"deviceIdentifier": "pc-a", "deviceName": "Remote-PC"}]
+        }
+        with patch("lmlink_devices._lms_json", side_effect=[loaded, link]):
+            self.assertEqual(discover_plamo_models("Remote-PC"), ["local-8b"])
 
     def test_exclude_by_device_id_or_name(self):
         with patch("lmlink_devices._lms_json", side_effect=[MODELS, LINK]):

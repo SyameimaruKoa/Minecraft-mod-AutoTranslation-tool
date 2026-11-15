@@ -125,6 +125,7 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
 
     ranked_models = []
     all_model_owners = {}
+    selected_device_models = {}
     for item in loaded:
         if not isinstance(item, dict):
             continue
@@ -148,6 +149,16 @@ def discover_plamo_models(excluded_devices=None, model_filter=None):
             )
         all_model_owners[identifier] = device_id
         if device_id not in selected_exclusions:
+            if device_id in selected_device_models:
+                previous = selected_device_models[device_id]
+                label = device_id if device_id is not None else "local"
+                raise RuntimeError(
+                    f"同一端末[{label}]に複数の翻訳用PLaMoがロードされています: "
+                    f"{previous}, {identifier}。"
+                    "1端末につき翻訳用PLaMoを1つだけロードしてください。"
+                    "修復用LFMはこの制限の対象外です。"
+                )
+            selected_device_models[device_id] = identifier
             ranked_models.append((plamo_model_priority(model_key), identifier))
 
     if not ranked_models:
