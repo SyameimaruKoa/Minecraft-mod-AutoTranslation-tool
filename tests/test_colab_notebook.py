@@ -143,6 +143,46 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertNotIn("Q4_0", available["8b"])
         self.assertNotIn("Q4_0", available["31b"])
 
+    def test_model_lookup_uses_local_rest_without_broken_cli_listing(self):
+        code = self.code_cells[-1]
+        self.assertIn('run_console(["lms", "server", "start", "--port", "1234"])', code)
+        self.assertIn('http://127.0.0.1:1234/api/v1/models', code)
+        self.assertIn('"--parallel", str(PARALLEL_REQUESTS)', code)
+        self.assertNotIn('read_lms_json', code)
+        self.assertNotIn('"lms", "ls"', code)
+        self.assertNotIn('"lms", "ps"', code)
+
+    def test_model_lookup_matches_exact_size_and_quantization(self):
+        code = self.code_cells[-1]
+        function = next(
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef) and node.name == "resolve_local_model_key"
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+        resolve = namespace["resolve_local_model_key"]
+        inventory = [
+            {"type": "llm", "key": "pfnet/plamo-3-translate-8b",
+             "format": "gguf", "quantization": {"name": "Q4_K_M"},
+             "size_bytes": 5280, "selected_variant": "pfnet/plamo-3-translate-8b@q4_k_m",
+             "variants": ["pfnet/plamo-3-translate-8b@q4_k_m"]},
+            {"type": "llm", "key": "pfnet/plamo-3-translate-8b-q3",
+             "format": "gguf", "quantization": {"name": "Q3_K_M"},
+             "size_bytes": 4310},
+            {"type": "llm", "key": "other/model", "format": "gguf",
+             "quantization": {"name": "Q4_K_M"}, "size_bytes": 5280}
+        ]
+        self.assertEqual(
+            resolve(inventory, "8b", "Q4_K_M", 5280),
+            "pfnet/plamo-3-translate-8b@q4_k_m"
+        )
+        with self.assertRaisesRegex(RuntimeError, "一意に特定"):
+            resolve(inventory, "8b", "Q4_K_M", 5279)
+        with self.assertRaisesRegex(RuntimeError, "一意に特定"):
+            resolve(inventory + [inventory[0]], "8b", "Q4_K_M", 5280)
+        with self.assertRaisesRegex(RuntimeError, "一意に特定"):
+            resolve(inventory, "8b", "Q2_K", 5280)
+
     def test_only_valid_quantization_combination(self):
         source = self.code_cells[-1]
         self.assertIn('plamo_size = "8b"', self.find_code('USE_GOOGLE_DRIVE = True'))
