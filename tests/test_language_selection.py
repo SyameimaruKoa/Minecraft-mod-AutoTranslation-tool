@@ -113,12 +113,12 @@ class LanguageSelectionTests(unittest.TestCase):
     def test_non_language_lang_files_outside_language_directories_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             archive = self.make_jar(folder, {
-                "assets/demo/textures/en_US.lang": "item=Not a translation\\n",
-                "assets/demo/models/en_US.lang": "model=Not a translation\\n",
-                "assets/demo/lang/sub/en_US.lang": "nested=Not a translation\\n",
+                "assets/demo/textures/en_US.lang": "item=Not a translation\n",
+                "assets/demo/models/en_US.lang": "model=Not a translation\n",
+                "assets/demo/lang/sub/en_US.lang": "nested=Not a translation\n",
                 "data/demo/lang/en_us.json": {"name": "Not a translation"},
                 "assets/demo/advancements/en_us.json": {"title": "Not a translation"},
-                "assets/demo/lang/en_US.lang": "item=Good translation\\n"
+                "assets/demo/lang/en_US.lang": "item=Good translation\n"
             })
             self.assertEqual(
                 extract_lang_files(archive),
@@ -128,10 +128,10 @@ class LanguageSelectionTests(unittest.TestCase):
     def test_shader_locale_paths_and_root_language_folder_are_kept(self):
         with tempfile.TemporaryDirectory() as folder:
             archive = self.make_jar(folder, {
-                "shaders/lang/en_US.lang": "shader=Water\\n",
-                "lang/en_US.lang": "menu=Settings\\n",
-                "shaders/other/en_US.lang": "invalid=Shader source\\n",
-                "shaders/models/en_US.lang": "invalid=Model source\\n",
+                "shaders/lang/en_US.lang": "shader=Water\n",
+                "lang/en_US.lang": "menu=Settings\n",
+                "shaders/other/en_US.lang": "invalid=Shader source\n",
+                "shaders/models/en_US.lang": "invalid=Model source\n",
                 "shaders/lang/en_us.json": {"shader": "JSON not supported in shader mode"}
             })
             selected = extract_lang_files(archive, is_shader_mode=True)
