@@ -260,17 +260,62 @@ class LMDeviceExclusionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "使用可能"):
                 discover_plamo_models("local,21KJ,Prestige-13-A13M")
 
-    def test_duplicate_model_id_across_devices_is_rejected_even_when_excluded(self):
+    def test_same_model_identifier_on_two_devices_is_usable(self):
         duplicate = [
-            dict(MODELS[0]),
-            dict(MODELS[1], identifier="plamo-local")
+            dict(MODELS[0], identifier="plamo-3-translate-8b"),
+            dict(MODELS[1], identifier="plamo-3-translate-8b")
+        ]
+        with patch("lmlink_devices._lms_json", return_value=duplicate):
+            self.assertEqual(
+                discover_plamo_models(),
+                ["plamo-3-translate-8b"]
+            )
+        with patch("lmlink_devices._lms_json", return_value=duplicate):
+            self.assertEqual(
+                discover_plamo_models(return_model_key=True),
+                (["plamo-3-translate-8b"], "pfnet/plamo-3-translate-8b")
+            )
+
+    def test_same_identifier_on_excluded_and_included_devices_is_ambiguous(self):
+        duplicate = [
+            dict(MODELS[0], identifier="plamo-3-translate-8b"),
+            dict(MODELS[1], identifier="plamo-3-translate-8b")
         ]
         with patch("lmlink_devices._lms_json", side_effect=[duplicate, LINK]):
-            with self.assertRaisesRegex(RuntimeError, "除外した端末"):
+            with self.assertRaisesRegex(RuntimeError, "送信先を保証できません"):
                 discover_plamo_models("Prestige-13-A13M")
-        with patch("lmlink_devices._lms_json", return_value=duplicate):
-            with self.assertRaisesRegex(RuntimeError, "複数"):
+
+    def test_same_identifier_for_different_model_keys_is_rejected(self):
+        models = [
+            dict(MODELS[0], identifier="shared"),
+            dict(MODELS[1], modelKey="pfnet/plamo-3-translate-2b", identifier="shared")
+        ]
+        with patch("lmlink_devices._lms_json", return_value=models):
+            with self.assertRaisesRegex(RuntimeError, "異なるPLaMoのmodelKey"):
                 discover_plamo_models()
+
+    def test_same_id_on_multiple_pcs_is_single_logical_endpoint_when_runtime_refreshes(self):
+        duplicate = [
+            dict(MODELS[0], identifier="plamo-3-translate-8b"),
+            dict(MODELS[1], identifier="plamo-3-translate-8b"),
+            dict(MODELS[2], identifier="plamo-3-translate-8b")
+        ]
+        with patch("lmlink_devices._lms_json", return_value=duplicate):
+            self.assertEqual(
+                discover_plamo_models(
+                    expected_model_key="pfnet/plamo-3-translate-8b",
+                    allow_empty=True
+                ), ["plamo-3-translate-8b"]
+            )
+
+    def test_same_id_on_multiple_pcs_plus_lfm_is_allowed(self):
+        models = [
+            dict(MODELS[0], identifier="plamo-3-translate-8b"),
+            dict(MODELS[1], identifier="plamo-3-translate-8b"),
+            dict(MODELS[3], identifier="lfm3-1.7b")
+        ]
+        with patch("lmlink_devices._lms_json", return_value=models):
+            self.assertEqual(discover_plamo_models(), ["plamo-3-translate-8b"])
 
     @patch("mod_translator.require_loaded_lm_studio_model", return_value="same-api-instance")
     @patch("mod_translator.discover_plamo_models", return_value=(
