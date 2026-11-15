@@ -972,6 +972,35 @@ def resolve_plamo_model(api_url):
     return chosen
 
 
+def detect_plamo_parallel_limit(api_url, models, fallback=2):
+    try:
+        response = requests.get(
+            _lm_studio_endpoint_base(api_url) + "/api/v1/models", timeout=5
+        )
+        response.raise_for_status()
+        inventory = response.json().get("models", [])
+        if not isinstance(inventory, list):
+            raise ValueError("models配列がありません")
+        identifiers = set(models)
+        limits = []
+        for entry in inventory:
+            if not isinstance(entry, dict) or entry.get("type") != "llm":
+                continue
+            for instance in entry.get("loaded_instances", []):
+                if not isinstance(instance, dict):
+                    continue
+                if instance.get("id") in identifiers:
+                    capacity = (instance.get("config") or {}).get("parallel")
+                    if isinstance(capacity, int) and not isinstance(capacity, bool) and 1 <= capacity <= 16:
+                        limits.append(capacity)
+        if limits:
+            return min(limits)
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as error:
+        print(f"警告: LM Studioの同時推論数を取得できません: {error}", flush=True)
+    print(f"情報: LM Studioの並列設定が未確認のため{fallback}ワーカーを使用", flush=True)
+    return fallback
+
+
 def parse_plamo_model_ids(value):
     if not value:
         return []
@@ -1561,7 +1590,11 @@ class ModTranslator:
         self.plamo_pool_from_lms = False
         self.plamo_model_filter = self.model_name
         self.plamo_model_key = None
-        self.workers = getattr(args, "workers", 1)
+        configured_workers = getattr(args, "workers", 1)
+        self.workers_auto = configured_workers == "auto"
+        if self.workers_auto and self.engine != "plamo":
+            raise ValueError("自動並列数はPLaMo専用です")
+        self.workers = 2 if self.workers_auto else int(configured_workers)
         if self.workers < 1:
             raise ValueError("並列数は1以上を指定してください")
         self.plamo_api_url = args.plamo_api_url
@@ -1663,6 +1696,11 @@ class ModTranslator:
                 require_loaded_lm_studio_model(
                     self.repair_model, self.repair_api_url, self.model_load_policy
                 )
+            if self.workers_auto:
+                self.workers = detect_plamo_parallel_limit(
+                    self.plamo_api_url, [self.model_name], fallback=2
+                )
+                print(f"情報: LM Studio公式Parallel設定から{self.workers}ワーカーを選択", flush=True)
             self.plamo_glossary = load_plamo_glossary(args.plamo_glossary)
             context_parts = [args.plamo_context] if args.plamo_context else []
             if args.plamo_context_file:
@@ -2171,7 +2209,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-load-policy", choices=["wait"], default="wait", help="PLaMo専用: 未ロードのモデルを手動ロードするまで待機（既定）")
     parser.add_argument("--gemma-only", action="store_true", help="Gemmaモデル限定")
     parser.add_argument("--force", action="store_true", help="強制再翻訳")
-    parser.add_argument("--workers", type=int, default=2, help="同時実行数（既定2、複数PLaMoでは各モデル当たりの並列数）")
+    parser.add_argument("--workers", default="2", help="同時実行数（既定2、PLaMoのみautoでLM Studioのparallel設定を使用）")
 
     args = parser.parse_args()
     if args.plamo_models and args.engine != "plamo":
@@ -2201,8 +2239,16 @@ if __name__ == "__main__":
             parse_plamo_model_ids(args.plamo_models)
         except ValueError as error:
             parser.error(str(error))
-    if args.workers < 1:
-        parser.error("--workers は1以上を指定してください")
+    if args.workers == "auto":
+        if args.engine != "plamo":
+            parser.error("--workers auto は--engine plamo専用です")
+    else:
+        try:
+            args.workers = int(args.workers)
+        except ValueError:
+            parser.error("--workers は1以上の整数またはPLaMoのautoを指定してください")
+        if args.workers < 1:
+            parser.error("--workers は1以上を指定してください")
     if args.plamo_history < 0 or args.plamo_history > 10:
         parser.error("--plamo-history は0〜10を指定してください")
     if args.plamo_history_refresh < 1:
