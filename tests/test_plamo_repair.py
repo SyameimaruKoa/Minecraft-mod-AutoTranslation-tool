@@ -253,8 +253,8 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(details["finish_reason"], "stop")
         self.assertIsNone(details["error"])
 
-    @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
-    @patch("plamo_repair.require_loaded_lm_studio_model", side_effect=lambda model, *args: model)
+    @patch("mod_translator.require_loaded_lm_studio_model", side_effect=lambda model, *args, **kwargs: model)
+    @patch("plamo_repair.require_loaded_lm_studio_model", side_effect=lambda model, *args, **kwargs: model)
     @patch("mod_translator.requests.post")
     def test_failed_repair_reports_original_draft_and_raw_response(self, post, repair_loaded, translation_loaded):
         def respond(url, json, timeout):
@@ -282,7 +282,8 @@ class PlamoSecondaryRepairTests(unittest.TestCase):
         self.assertEqual(key, "name")
         self.assertEqual(details["source"], "Enchant %s levels")
         self.assertEqual(details["plamo_response"], "エンチャントレベル")
-        self.assertEqual(details["repair_response"], "", msg=f"details={details!r}; log={output.getvalue()!r}; calls={post.call_args_list!r}")
+        self.assertEqual(details["repair_response"], "")
+        self.assertEqual(post.call_count, 2)
         self.assertEqual(details["repair_finish_reason"], "length")
         self.assertIn("Expecting value", details["repair_error"])
         self.assertIn('原文: "Enchant %s levels"', output.getvalue())
