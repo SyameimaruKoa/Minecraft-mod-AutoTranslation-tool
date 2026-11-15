@@ -191,6 +191,52 @@ class ParallelTranslationTests(unittest.TestCase):
         self.assertEqual(rendered.count("修復[2件成功]"), 1)
         self.assertNotIn("未完了結果を回収中", rendered)
 
+    def test_model_pool_fills_two_slots_per_model_concurrently(self):
+        from translation_parallel import translate_model_pool_batches
+
+        barrier = threading.Barrier(4, timeout=3)
+        lock = threading.Lock()
+        active = {"device-a": 0, "device-b": 0}
+        peak = {"device-a": 0, "device-b": 0}
+        processed = {}
+
+        def translate(batch, model):
+            with lock:
+                active[model] += 1
+                peak[model] = max(peak[model], active[model])
+                for key in batch:
+                    processed[key] = model
+            barrier.wait()
+            with lock:
+                active[model] -= 1
+            return {key: value for key, value in batch.items()}
+
+        source = {f"item-{i}": f"Text {i}" for i in range(8)}
+        result = translate_model_pool_batches(
+            source, workers=2, batch_size=1, translator=translate,
+            models=["device-a", "device-b"], label="PLaMo"
+        )
+        self.assertEqual(result, source)
+        self.assertEqual(peak, {"device-a": 2, "device-b": 2})
+        self.assertEqual(set(processed.values()), {"device-a", "device-b"})
+
+    def test_single_model_worker_count_remains_unchanged(self):
+        from translation_parallel import translate_model_pool_batches
+
+        seen = []
+        def translate(batch, model):
+            seen.append(model)
+            return batch
+
+        self.assertEqual(
+            translate_model_pool_batches(
+                {"one": "Stone", "two": "Wood"}, workers=2,
+                batch_size=1, translator=translate, models=["only-one"], label="PLaMo"
+            ),
+            {"one": "Stone", "two": "Wood"}
+        )
+        self.assertEqual(seen, ["only-one", "only-one"])
+
     def test_model_ids_parse_and_validate_duplicates(self):
         self.assertEqual(
             parse_plamo_model_ids(" plamo-local , plamo-linked "),
