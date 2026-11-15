@@ -1918,22 +1918,6 @@ class ModTranslator:
         scan_plan, scan_stats = scanner.scan(
             files, extract_lang_files, detect_pack_format
         )
-        if self.engine == "plamo":
-            obsolete_failures = [
-                key for key, record in self.plamo_failures.items()
-                if isinstance(record, dict)
-                and record.get("mod") in files
-                and isinstance(record.get("lang_path"), str)
-                and os.path.splitext(os.path.basename(record["lang_path"].replace("\\", "/")))[0].casefold() == "en_ud"
-            ]
-            if obsolete_failures:
-                for key in obsolete_failures:
-                    del self.plamo_failures[key]
-                save_json(self.plamo_failure_file, self.plamo_failures)
-                print(
-                    f"情報: 逆さ英語en_ud由来の古い翻訳失敗記録を"
-                    f"{len(obsolete_failures)}件整理しました"
-                )
         total_files = len(scan_plan)
         print(
             f"事前スキャン完了: {total_files} Mod / "
