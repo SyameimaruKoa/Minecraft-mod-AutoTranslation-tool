@@ -171,12 +171,12 @@ Write-Host " [1] Google Translate (無料/キー不要/精度並)"
 Write-Host " [2] Gemini AI (高速/要APIキー/高精度 - 推奨)"
 Write-Host " [3] Local LLM (Ollama/LM Studio)"
 Write-Host " [4] PLaMo 3 Translate (LM Studio)"
-Write-Host " [5] このPCのPLaMoモデルIDを変更して翻訳する"
+Write-Host " [5] このPCをLM Link翻訳クラスターへ参加させて翻訳する"
 Write-Host ""
 
 $engine_choice = Read-Host "番号を入力 [1-5]"
 if ($engine_choice -eq "5") {
-    & $PY_EXEC "plamo_identifier.py" --interactive
+    & $PY_EXEC "plamo_identifier.py" --join --yes
     if ($LASTEXITCODE -ne 0) {
         Write-Log "モデルIDの変更に失敗したため、翻訳を開始しないのじゃ。" "Red"
         exit 1
