@@ -24,7 +24,7 @@ DEFAULT_FORMAT_FALLBACK = 34  # pack.mcmetaが見つからない場合のデフ�
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
 )
-GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?key={}"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
 LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 PLAMO_API_URL = "http://127.0.0.1:1234/v1/completions"
@@ -55,121 +55,105 @@ ERROR_KEYWORDS = [
     "Service Unavailable",
 ]
 
-# 優先モデルリスト（ユーザー指定）
-DEFAULT_PRIORITY = [
-    "gemini-2.5-flash", # そろそろ終わる
-    "gemini-2.5-flash-lite", # そろそろ終わる
+# 翻訳対象モデルはAPIの対応機能と系統から判定し、モデルIDを固定しない。
+GEMINI_NON_TEXT_MARKERS = (
+    "image", "tts", "audio", "live", "embedding", "transcribe",
+    "robotics", "computer-use", "video", "speech"
+)
 
-    "gemini-flash-lite-latest",
-    "gemini-flash-latest",
-    "gemma-3n-e2b-it",
-    "gemma-3n-e4b-it",
-    "gemma-3-27b-it",
-    "gemma-3-12b-it",
-    "gemma-3-8b-it", # 消えた？
-    "gemma-3-4b-it",
-    "gemma-3-2b-it", # 増えた？
-    "gemma-3-1b-it",
-]
 
 # --- ヘルパー関数 ---
 
 
 def get_model_settings(model_name):
-    """
-    モデル名に基づいて、最適なバッチサイズ（行数）とリクエスト間隔（秒）を返す。
-    """
-    if not model_name:
-        return 45, 2.0  # デフォルト
+    """モデル系統に応じた初期バッチ件数・送信間隔（制限時は別途バックオフ）。"""
+    name = (model_name or "").lower()
+    if name.startswith("gemma-"):
+        return 5, 2.1
+    if "flash-lite" in name:
+        return 40, 5.0
+    if "flash" in name:
+        return 40, 6.2
+    if "pro" in name:
+        return 40, 10.0
+    return 30, 5.0
 
-    name = model_name.lower()
 
-    # デフォルト値
-    batch_size = 40
-    interval = 5.0
-
-    if "gemma" in name:
-        # Gemma 3: TPM制限がきついため、小分けにする
-        batch_size = 5
-        interval = 2.1
-
-    elif "flash-lite" in name:
-        # Lite: 大量バッチ可能だが、JSON崩壊リスクがあるため300程度に留める
-        batch_size = 300
-        interval = 5.0
-
-    elif "flash" in name:
-        # Flash: RPM制限がきつい
-        batch_size = 50
-        interval = 6.2
-
-    elif "pro" in name:
-        batch_size = 60
-        interval = 32.0
-
-    return batch_size, interval
+def _gemini_model_priority(name):
+    """小さいほど優先。既定ではProやテキスト以外の専用モデルを使わない。"""
+    lower = name.lower()
+    if any(marker in lower for marker in GEMINI_NON_TEXT_MARKERS):
+        return None
+    if lower.startswith("gemini-"):
+        if "flash-lite" in lower:
+            family = 1
+        elif "flash" in lower:
+            family = 0
+        else:
+            return None
+    elif lower.startswith("gemma-"):
+        family = 2
+    else:
+        return None
+    match = re.search(r"-(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?", lower)
+    version = tuple(int(value or 0) for value in match.groups()) if match else (0, 0, 0)
+    is_preview = any(marker in lower for marker in ("preview", "-exp", "experimental"))
+    is_alias = not match
+    return (is_preview, family, is_alias, *(-value for value in version), lower)
 
 
 def get_available_gemini_models(api_key):
-    """APIキーを使用して現在利用可能なモデル一覧を取得する"""
+    """models.listを全ページ取得し、generateContent対応モデルのみ返す。"""
+    models = []
+    page_token = None
+    visited = set()
+    headers = {"x-goog-api-key": api_key}
     try:
-        url = GEMINI_MODELS_URL.format(api_key)
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
+        while True:
+            params = {"pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            response = requests.get(
+                GEMINI_MODELS_URL, headers=headers, params=params, timeout=20
+            )
+            if response.status_code != 200:
+                raise RuntimeError(f"モデル一覧取得失敗 (HTTP {response.status_code})")
             data = response.json()
-            models = [m["name"].replace("models/", "") for m in data.get("models", [])]
-            return models
-        else:
-            print(f"警告: モデル一覧の取得に失敗しました (HTTP {response.status_code})")
-            return []
-    except Exception as e:
-        print(f"警告: モデル一覧取得中にエラーが発生: {e}")
-        return []
+            for model in data.get("models", []):
+                name = model.get("name", "")
+                methods = model.get("supportedGenerationMethods", [])
+                if (
+                    isinstance(name, str) and name.startswith("models/")
+                    and "generateContent" in methods
+                ):
+                    models.append(name.removeprefix("models/"))
+            next_token = data.get("nextPageToken")
+            if not next_token:
+                break
+            if next_token in visited:
+                raise RuntimeError("モデル一覧のページトークンが循環しました")
+            visited.add(next_token)
+            page_token = next_token
+    except (requests.RequestException, ValueError, RuntimeError) as error:
+        raise RuntimeError(f"Geminiモデル一覧を取得できません: {error}") from error
+    return list(dict.fromkeys(models))
 
 
 def get_prioritized_models(api_key, gemma_only=False):
-    """
-    優先順位リストと利用可能なモデルを照らし合わせて、
-    利用可能なモデルのリストを優先度順に返す。
-    """
+    """API公開モデルを安定版・系統・バージョン順に選択する。"""
     print("情報: 利用可能なGeminiモデルを探索中...")
-    available_models = get_available_gemini_models(api_key)
-
-    # Geminiが使えない、または見つからない場合のGemmaフォールバックリスト
-    gemma_fallback = [m for m in DEFAULT_PRIORITY if "gemma" in m]
-
-    if not available_models:
-        print(
-            f"警告: モデル一覧が取得できなかったため、Gemmaモデルをフォールバックとして使用します。"
-        )
-        return gemma_fallback
-
-    valid_models = []
-
-    # 優先リスト順にチェック
-    for candidate in DEFAULT_PRIORITY:
-        # Gemma限定モード時は、名前に "gemma" が含まれていないモデルを除外する
-        if gemma_only:
-            if "gemma" not in candidate.lower():
-                continue
-
-        if candidate in available_models:
-            valid_models.append(candidate)
-
-    if not valid_models:
-        if gemma_only:
-            print(
-                "警告: 指定されたGemmaモデルが見つかりませんでした。デフォルトのGemmaモデルを強制使用します。"
-            )
-            return gemma_fallback
-        else:
-            print(
-                "警告: 優先リスト内のモデルが見つかりませんでした。Gemmaモデルを使用します。"
-            )
-            return gemma_fallback
-
-    print(f"情報: {len(valid_models)} 個の有効なモデルが見つかりました。")
-    return valid_models
+    candidates = get_available_gemini_models(api_key)
+    models = [
+        name for name in candidates
+        if _gemini_model_priority(name) is not None
+        and (not gemma_only or name.lower().startswith("gemma-"))
+    ]
+    models.sort(key=_gemini_model_priority)
+    if not models:
+        kind = "Gemma" if gemma_only else "Gemini / Gemma"
+        raise RuntimeError(f"翻訳に使用できる{kind}モデルがAPIから返されませんでした")
+    print(f"情報: {len(models)} 個の有効なモデルが見つかりました。")
+    return models
 
 
 def repair_and_parse_json(text):
@@ -260,15 +244,7 @@ class ModelSelector:
                 return model
             self.current_idx += 1
 
-        # 3. もし最後まで到達してしまったら（全滅）
-        print(
-            "警告: 全てのモデルが使用不可になりました。制限をリセットして再試行します。"
-        )
-        self.disabled_models.clear()
-        self.failure_counts = {m: 0 for m in self.models}
-        self.current_idx = 0
-        self.fallback_start_time = None
-        return self.models[0]
+        raise RuntimeError("Geminiの利用可能なモデルがすべて失敗しました。翻訳を中断します")
 
     def _try_recover_priority(self):
         """より優先度の高い（インデックスが小さい）モデルが使えるか確認し、戻す"""
@@ -329,6 +305,17 @@ class ModelSelector:
             return "switched"
 
         return "continue"
+
+    def disable_model(self, model_name=None):
+        """永続的なモデルエラーでは直ちに候補から除外する。"""
+        if self.current_idx >= len(self.models):
+            return "disabled"
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return "continue"
+        self.disabled_models.add(model)
+        self._switch_to_next()
+        return "disabled"
 
     def _switch_to_next(self):
         """次のモデルへインデックスを進める"""
