@@ -428,7 +428,7 @@ def is_language_resource_path(file, ext, is_shader_mode=False):
     return ext == ".lang" and parts[:-1] in (["lang"], ["shaders", "lang"])
 
 
-def extract_lang_files(mod_path, is_shader_mode=False):
+def extract_lang_files(mod_path, is_shader_mode=False, japanese_only=False):
     selected = {}
     try:
         with zipfile.ZipFile(mod_path, "r") as zf:
@@ -439,7 +439,7 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                     continue
                 if not re.fullmatch(r"[a-z]{2,3}(?:_[a-z0-9]{2,8})?", locale):
                     continue
-                if language_code_from_path(file) == "ja" or locale == "en_ud":
+                if (language_code_from_path(file) == "ja") != japanese_only or locale == "en_ud":
                     continue
                 if not is_language_resource_path(file, ext, is_shader_mode):
                     continue
@@ -465,7 +465,7 @@ def extract_lang_files(mod_path, is_shader_mode=False):
                     isinstance(value, str) and key not in IGNORE_KEYS
                     for key, value in content.items()
                 )
-                if not count:
+                if not count and not japanese_only:
                     continue
                 group = file.rpartition("/")[0]
                 score = (count, int(locale == "en" or locale.startswith("en_")), int(ext == ".json"))
@@ -474,6 +474,10 @@ def extract_lang_files(mod_path, is_shader_mode=False):
     except Exception as e:
         print(f"エラー: ファイル読み込み失敗 {mod_path}: {e}")
     return {file: content for _, file, content in selected.values()}
+
+
+def extract_japanese_lang_files(mod_path, is_shader_mode=False):
+    return extract_lang_files(mod_path, is_shader_mode, japanese_only=True)
 
 
 # --- 翻訳エンジン ---
@@ -1916,8 +1920,22 @@ class ModTranslator:
         )
         scanner = ModScanCache(self.input_dir, self.output_dir, self.is_shader_mode)
         scan_plan, scan_stats = scanner.scan(
-            files, extract_lang_files, detect_pack_format
+            files, extract_lang_files, detect_pack_format, extract_japanese_lang_files
         )
+        existing_japanese = {}
+        for filename, lang_files, _ in scan_plan:
+            bundled = {
+                path.rpartition("/")[0]: values
+                for path, values in scanner.japanese_files.get(filename, {}).items()
+            }
+            for lang_path in lang_files:
+                values = bundled.get(lang_path.rpartition("/")[0], {})
+                existing_japanese[(filename, lang_path)] = (
+                    {} if self.force else {
+                        key: value for key, value in values.items()
+                        if has_japanese_translation(value)
+                    }
+                )
         total_files = len(scan_plan)
         print(
             f"事前スキャン完了: {total_files} Mod / "
@@ -1937,6 +1955,7 @@ class ModTranslator:
                     pending = {
                         source for key, source in content.items()
                         if key not in IGNORE_KEYS and isinstance(source, str)
+                        and key not in existing_japanese[(filename, lang_path)]
                         and (
                             self.force or self.get_plamo_translation(
                                 filename, lang_path, key, source
@@ -1989,10 +2008,14 @@ class ModTranslator:
                     f"  -> 翻訳元: {lang_path} "
                     f"({language_code_from_path(lang_path)}, {len(content)}項目)"
                 )
+                japanese = existing_japanese[(filename, lang_path)]
+                if japanese:
+                    print(f"  -> Mod内の既存日本語 {len(japanese)} 項目を保持")
                 if self.engine == "plamo":
                     to_translate = {
                         key: source for key, source in content.items()
                         if key not in IGNORE_KEYS and isinstance(source, str)
+                        and key not in japanese
                         and (self.force or self.get_plamo_translation(filename, lang_path, key, source) is None)
                     }
                     if to_translate:
@@ -2107,12 +2130,13 @@ class ModTranslator:
                             )
                             if cached is not None:
                                 translated_data[key] = cached
+                    translated_data.update(japanese)
                     self.write_output(filename, lang_path, translated_data, pack_format)
                     continue
 
                 to_translate = {}
                 for k, v in content.items():
-                    if k in IGNORE_KEYS or not isinstance(v, str):
+                    if k in IGNORE_KEYS or not isinstance(v, str) or k in japanese:
                         continue
                     if not self.force and v in self.cache:
                         continue
@@ -2172,6 +2196,7 @@ class ModTranslator:
                         if isinstance(v, str) and v in self.cache:
                             translated_data[k] = self.cache[v]
 
+                translated_data.update(japanese)
                 self.write_output(filename, lang_path, translated_data, pack_format)
 
     def write_output(self, original_filename, lang_internal_path, data, pack_format):

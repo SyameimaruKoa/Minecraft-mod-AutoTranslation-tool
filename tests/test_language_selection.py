@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from mod_translator import (
-    ModTranslator, build_plamo_prompt, extract_lang_files,
+    ModTranslator, build_plamo_prompt, extract_lang_files, extract_japanese_lang_files,
     language_code_from_path, translate_with_plamo
 )
 
@@ -44,6 +44,28 @@ class LanguageSelectionTests(unittest.TestCase):
                 "assets/other/lang/de_de.json"
             })
             self.assertEqual(len(files["assets/demo/lang/fr_fr.json"]), 3)
+
+    def test_bundled_japanese_keeps_ja_values_and_ignores_other_resources(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive = self.make_jar(folder, {
+                "assets/demo/lang/en_us.json": {"a": "Iron", "b": "Dust"},
+                "assets/demo/lang/ja_jp.json": {
+                    "a": "鉄", "b": "Dust", "extra": "追加訳"
+                },
+                "assets/demo/models/ja_jp.json": {"wrong": "模型"},
+                "assets/other/lang/ja_JP.lang": "a=日本語\nb=Still English\n",
+            })
+            self.assertEqual(
+                extract_japanese_lang_files(archive),
+                {
+                    "assets/demo/lang/ja_jp.json": {
+                        "a": "鉄", "b": "Dust", "extra": "追加訳"
+                    },
+                    "assets/other/lang/ja_JP.lang": {
+                        "a": "日本語", "b": "Still English"
+                    }
+                }
+            )
 
     def test_en_ud_is_never_selected_even_with_more_entries(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -272,6 +294,73 @@ class LanguageSelectionTests(unittest.TestCase):
                 self.assertEqual(
                     json.load(translated), {"a": "日本語", "b": "日本語"}
                 )
+
+    @patch("mod_translator.requests.post")
+    def test_bundled_japanese_survives_cache_and_only_untranslated_entries_run(self, post):
+        with tempfile.TemporaryDirectory() as folder:
+            mods = os.path.join(folder, "mods")
+            output = os.path.join(folder, "output")
+            os.makedirs(mods)
+            self.make_jar(mods, {
+                "assets/demo/lang/en_us.json": {
+                    "already": "Iron Ingot",
+                    "untranslated": "Steel Dust",
+                    "missing": "Copper Ingot",
+                },
+                "assets/demo/lang/ja_jp.json": {
+                    "already": "鉄インゴット",
+                    "untranslated": "Steel Dust",
+                    "extra": "追加の日本語"
+                }
+            })
+
+            def reply(url, json, timeout):
+                prompt = json["prompt"]
+                translated = "鋼鉄の粉" if "Steel Dust" in prompt else "銅インゴット"
+                result = Mock(status_code=200, text="")
+                result.json.return_value = {
+                    "choices": [{"text": translated, "finish_reason": "stop"}]
+                }
+                return result
+
+            post.side_effect = reply
+            args = SimpleNamespace(
+                input=mods, output=output, engine="plamo", key=None,
+                model="plamo-3-translate-8b", plamo_models=None,
+                plamo_api_url="http://127.0.0.1:1234/v1/completions",
+                plamo_form="plain", plamo_glossary=None, plamo_context="",
+                plamo_context_file=None, plamo_history=0,
+                gemma_only=False, force=False
+            )
+            translator = ModTranslator(args)
+            translator.save_plamo_translation(
+                "example.jar", "assets/demo/lang/en_us.json",
+                "already", "Iron Ingot", "キャッシュの訳"
+            )
+            translator.run()
+            self.assertEqual(post.call_count, 2)
+            out_file = os.path.join(output, "assets", "demo", "lang", "ja_jp.json")
+            with open(out_file, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {
+                    "already": "鉄インゴット",
+                    "untranslated": "鋼鉄の粉",
+                    "missing": "銅インゴット",
+                    "extra": "追加の日本語"
+                })
+            ModTranslator(args).run()
+            self.assertEqual(post.call_count, 2)
+
+            os.unlink(os.path.join(output, "mod_scan_cache.json"))
+            os.unlink(os.path.join(output, "plamo_cache.json"))
+            ModTranslator(args).run()
+            self.assertEqual(post.call_count, 4)
+            with open(out_file, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {
+                    "already": "鉄インゴット",
+                    "untranslated": "鋼鉄の粉",
+                    "missing": "銅インゴット",
+                    "extra": "追加の日本語"
+                })
 
     @patch("mod_translator.requests.post")
     def test_cyrillic_only_response_is_retried_for_japanese(self, post):
