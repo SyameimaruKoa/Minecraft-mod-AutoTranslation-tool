@@ -1,6 +1,7 @@
 import ast
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -142,6 +143,59 @@ class ColabNotebookTests(unittest.TestCase):
             )
         self.assertNotIn("Q4_0", available["8b"])
         self.assertNotIn("Q4_0", available["31b"])
+
+    def test_mradermacher_sources_have_explicit_scope(self):
+        config = self.find_code('USE_GOOGLE_DRIVE = True')
+        code = self.code_cells[-1]
+        self.assertIn('model_source = "pfnet"', config)
+        self.assertIn('["pfnet", "mradermacher", "mradermacher-i1"]', config)
+        self.assertIn('plamo_size = "8b"', config)
+        self.assertIn('if model_source != "pfnet" and plamo_size != "8b":', code)
+        self.assertIn('repo_name = "plamo-3-translate-8b-i1-GGUF"', code)
+        self.assertIn('source_owner = "pfnet" if model_source == "pfnet" else "mradermacher"', code)
+        self.assertIn('https://huggingface.co/api/models/{source_repo}/tree/main', code)
+        self.assertIn('"limit": 1000', code)
+        self.assertIn('model_path = model_dir / filename', code)
+        self.assertIn('if model_source != "pfnet" and current != expected_bytes:', code)
+        self.assertIn('quantization.casefold()', code)
+        self.assertNotIn('"lms", "get"', code)
+
+    def test_mradermacher_variant_selection_uses_real_file_list(self):
+        code = self.code_cells[-1]
+        function = next(
+            node for node in ast.parse(code).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "resolve_hf_gguf_file"
+        )
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "<notebook>", "exec"), namespace)
+        resolve = namespace["resolve_hf_gguf_file"]
+        entries = [
+            {"path": "README.md", "size": 100},
+            {"path": "plamo-3-translate-8b.Q8_0.gguf", "size": 9100000000},
+            {"path": "plamo-3-translate-8b.i1-Q5_K_M.gguf", "size": 6100000000},
+            {"path": "plamo-3-translate-8b.i1-Q6_K.gguf", "size": 7000000000},
+            {"path": "plamo-3-translate-8b.i1-Q4_K_M.gguf", "size": 5300000000},
+        ]
+        self.assertEqual(resolve(entries, "8b", "Q8_0", False),
+                         ("plamo-3-translate-8b.Q8_0.gguf", 9100000000))
+        self.assertEqual(resolve(entries, "8b", "Q5_K_M", True),
+                         ("plamo-3-translate-8b.i1-Q5_K_M.gguf", 6100000000))
+        self.assertEqual(resolve(entries, "8b", "Q6_K", True),
+                         ("plamo-3-translate-8b.i1-Q6_K.gguf", 7000000000))
+        with self.assertRaisesRegex(ValueError, "一意に取得"):
+            resolve(entries, "8b", "Q8_0", True)
+        with self.assertRaisesRegex(ValueError, "一意に取得"):
+            resolve(entries, "31b", "Q8_0", False)
+        with self.assertRaisesRegex(ValueError, "一意に取得"):
+            resolve(entries + [entries[1]], "8b", "Q8_0", False)
+
+    def test_vram_table_changes_for_third_party_quantization(self):
+        code = self.find_code("PLAMO_GGUF_SIZES_GB =")
+        self.assertIn('if model_source != "pfnet":', code)
+        self.assertIn('"Q8_0": 9.1', code)
+        self.assertIn('"Q5_K_M": 6.1', code)
+        self.assertIn('"Q6_K": 7.0', code)
 
     def test_model_lookup_uses_local_rest_without_broken_cli_listing(self):
         code = self.code_cells[-1]

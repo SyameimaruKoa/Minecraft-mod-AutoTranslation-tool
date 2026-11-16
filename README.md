@@ -205,6 +205,31 @@ Mod ファイル本体（`.jar`）を書き換えることはなく「読み取�
   - APIサーバーの接続先変更は`--plamo-api-url`、モデルIDの直接指定は`--model`を使用する。キャッシュにある文章を翻訳し直す場合は`--force`を併用する。
   - 公式モデルの0.8B・2B・8B・31B（GGUF対応）から適切なサイズを選べる。モデルの詳細は[公式モデルカード](https://huggingface.co/pfnet/plamo-3-translate-2b-GGUF)を参照。
 
+### PLaMo 3 TranslateのGGUFモデルと選び方
+
+PLaMo 3 Translateは翻訳専用モデル。**0.8B・2B・8B・31Bはパラメータ数の異なるモデル**で、Q4・Q5・Q6・Q8などは同じモデルを圧縮した量子化形式じゃ。量子化のビット数を上げてもモデルのパラメータ数は変わらない。
+
+| モデル配布元 | 対応モデル | 特徴 |
+|---|---|---|
+| [pfnet公式](https://huggingface.co/pfnet/plamo-3-translate-8b-GGUF) | 0.8B / 2B / 8B / 31B | 公式の検証済みGGUF。8Bの既定はQ4_K_M（5.28GB） |
+| [mradermacher 通常版](https://huggingface.co/mradermacher/plamo-3-translate-8b-GGUF) | 8B | Q5_K_M・Q6_K・Q8_0など公式にない量子化も選べる |
+| [mradermacher i1版](https://huggingface.co/mradermacher/plamo-3-translate-8b-i1-GGUF) | 8B | imatrixによる重み付け量子化。Q5_K_M・Q6_K・IQ系などに対応 |
+
+**推奨モデル（目安）**
+
+| 実行環境 | 第一候補 | 理由 |
+|---|---|---|
+| Google Colab無料枠・T4（16GB） | mradermacher通常版 8B／Q8_0（約9.1GB） | GPUメモリに余裕があれば量子化誤差を抑えられる |
+| RTX 2070／2070 Max-Q（8GB） | mradermacher i1版 8B／Q5_K_M（約6.1GB） | 全層GPUロード時のKVキャッシュ・作業メモリを確保しやすい |
+| RTX 2070で短い文脈・精度優先 | 8B／Q6_K（約7.0GB） | VRAM使用量が多く、ロード可能か実測が必要 |
+| Prestige-13-A13M-5009JP（i7-1355U／Iris Xe／32GB） | pfnet公式 8B／Q4_K_M（5.28GB） | 共有メモリ環境では容量よりメモリ帯域・推論速度を優先 |
+
+- **公式Q4_K_Mは品質上も有力**：PFN公式の8B翻訳ベンチマークではBF16に近いスコア。非公式Q5・Q6・Q8との実翻訳比較値は未確認のため、精度向上を断定しない。
+- **Colabでの選択**：`run_colab_server.ipynb`の設定セルで`model_source`を`pfnet`・`mradermacher`・`mradermacher-i1`から選ぶ。`plamo_size="8b"`にして`quantization`を指定。通常版Q8_0は`mradermacher`、i1-Q5_K_Mは`mradermacher-i1`じゃ。
+- **取得方法**：pfnet公式は従来どおり既知のファイル名を使用。mradermacher版はHugging Faceのファイル一覧から量子化名とGGUF容量を確認して取得する。未配布の組み合わせは拒否し、他の実験的な量子化配布元は追加しない。
+- **ローカルPC**：上記Hugging FaceのGGUFをLM Studioへインポートしてロードする。Colabノートブックは不要じゃ。
+- **LM Linkの分散実行**：異なる量子化や配布元のモデルは`modelKey`が異なり得る。同じ翻訳プールに参加させるなら、実際の`modelKey`を各端末で一致させるのじゃ。
+
 ### LLM翻訳の並列処理
 
 **Gemini・Ollama・LM Studio・PLaMo**で翻訳リクエストを複数同時に実行できる。Google Translateは対象外じゃ。
@@ -232,7 +257,7 @@ python mod_translator.py --engine plamo --input "C:\Minecraft\mods" --output "Ou
 - Googleドライブの既定保存先は`MyDrive/.colab-secret/lmstudio/`。設定セルで`USE_GOOGLE_DRIVE=True`、`DRIVE_FOLDER_NAME=".colab-secret"`を共有する。保存を無効化することもできる。
 - 初回はLM Studioのブラウザ認証が必要。ログイン後に`credentials`と`hub`の認証ファイルを直接保存し、次回起動時に復元する。有効なログイン状態なら再認証しない。
 - 内部デーモン用の`.internal`、モデル本体、ログは保存しない。ドライブ上の認証ファイルは追加暗号化せず保存されるため、ドライブの共有設定には注意すること。
-- モデル取得はpfnet公式Hugging Faceの配布GGUFだけを対象にし、**8B／Q4_K_Mを既定値**とする。公式配布済み形式のみ選択可能で、8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`によるインタラクティブ検索を行わない。 LM Linkの一時無効化直後に`lms unload --all`が`connector_closed`などで失敗した場合は、既知の一時エラーに限って再試行する。モデル本体はランタイム上へ保存するため、ランタイムの再作成時には再ダウンロードする。
+- モデル取得は**pfnet公式／mradermacher通常版／mradermacher i1版**に対応し、**pfnet公式8B／Q4_K_Mを既定値**とする。mradermacher版は8Bのみ、Hugging Faceで確認できたGGUFファイルを直接取得。公式8B／31Bに存在しないQ4_0は拒否する。中断時は再開可能。`lms get`のインタラクティブ検索は使わない。LM Link一時無効化直後の`lms unload --all`が`connector_closed`などで失敗した場合は、既知の一時エラーに限って再試行する。モデル本体はランタイム上へ保存するため、再作成時には再ダウンロードする。
 
 ### LM Linkの複数デバイスでPLaMoを分散翻訳
 
