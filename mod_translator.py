@@ -118,7 +118,28 @@ def get_available_gemini_models(api_key):
                 GEMINI_MODELS_URL, headers=headers, params=params, timeout=20
             )
             if response.status_code != 200:
-                raise RuntimeError(f"モデル一覧取得失敗 (HTTP {response.status_code})")
+                try:
+                    error = response.json().get("error", {})
+                    status = str(error.get("status", ""))
+                    message = str(error.get("message", ""))
+                    reasons = {
+                        item.get("reason") for item in error.get("details", [])
+                        if isinstance(item, dict) and item.get("reason")
+                    }
+                except (ValueError, AttributeError, TypeError):
+                    status, message, reasons = "", "", set()
+                message = message.replace(api_key, "[REDACTED]")[:250]
+                if "API_KEY_INVALID" in reasons or "api key not valid" in message.lower():
+                    raise RuntimeError(
+                        "Gemini APIキーが無効です。start.ps1 のGemini選択後に"
+                        "[C]で保存済みキーを更新してください"
+                        f" (HTTP {response.status_code})"
+                    )
+                details = " / ".join(part for part in (status, message) if part)
+                suffix = f": {details}" if details else ""
+                raise RuntimeError(
+                    f"モデル一覧取得失敗 (HTTP {response.status_code}){suffix}"
+                )
             data = response.json()
             for model in data.get("models", []):
                 name = model.get("name", "")
