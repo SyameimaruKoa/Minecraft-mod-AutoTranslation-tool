@@ -530,10 +530,18 @@ def translate_with_gemini(
 
         batch_success = False
         retry_count = 0
-        max_retries = 3  # 通常のリトライ回数
+        max_retries = 3  # モデルごとのリトライ回数
+        request_attempts = 0
+        max_attempts = 12  # 複数モデルの429を含め、無限リトライを防ぐ
 
         # バッチ内ループ（全員救出するまで、あるいは諦めるまで回る）
         while not batch_success:
+            if request_attempts >= max_attempts:
+                print(f"エラー: Geminiの再試行上限に達しました。残り{len(current_batch_target)}件をスキップします。")
+                batch_success = True
+                break
+            current_model = selector.get_current_model()
+            _, interval = get_model_settings(current_model)
             response = None
 
             # ターゲット用のDictを作成
@@ -542,8 +550,8 @@ def translate_with_gemini(
             try:
                 prompt = prompt_base + json.dumps(batch_dict, ensure_ascii=False)
 
-                url = GEMINI_API_URL.format(current_model) + f"?key={api_key}"
-                headers = {"Content-Type": "application/json"}
+                url = GEMINI_API_URL.format(current_model.removeprefix("models/"))
+                headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"responseMimeType": "application/json"},
@@ -551,14 +559,16 @@ def translate_with_gemini(
 
                 if request_gate:
                     request_gate.wait(current_model, interval)
+                request_attempts += 1
                 response = requests.post(url, headers=headers, json=payload, timeout=90)
 
                 if response.status_code == 200:
                     try:
                         result_json = response.json()
-                        content_text = result_json["candidates"][0]["content"]["parts"][
-                            0
-                        ]["text"]
+                        parts = result_json["candidates"][0]["content"]["parts"]
+                        content_text = "".join(
+                            part.get("text", "") for part in parts if not part.get("thought")
+                        )
 
                         # パース & 修復
                         translated_batch = repair_and_parse_json(content_text)
@@ -580,8 +590,12 @@ def translate_with_gemini(
                             # 結果を統合
                             valid_count_in_response = 0
                             for k, v in translated_batch.items():
-                                if k in text_dict:  # 元データにあるものだけ採用
-                                    translated_results[k] = str(v)
+                                if (
+                                    k in batch_dict and isinstance(v, str)
+                                    and is_valid_translation(batch_dict[k], v)
+                                    and format_tokens_preserved(batch_dict[k], v)
+                                ):
+                                    translated_results[k] = v
                                     valid_count_in_response += 1
 
                             # まだ翻訳できていないキーを計算（ドリルダウン）
@@ -621,41 +635,59 @@ def translate_with_gemini(
                         else:
                             raise ValueError("Response is not a dict")
 
-                    except (KeyError, json.JSONDecodeError, ValueError) as e:
+                    except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as e:
                         print(f"警告: Gemini応答の解析失敗: {e}")
                         retry_count += 1
                         time.sleep(2)
 
                 elif response.status_code == 429:
-                    print(f"警告: レート制限 (429) 発生。")
+                    print(f"警告: モデル [{current_model}] のレート制限 (429) が発生しました。")
                     action = selector.report_failure()
-                    if action in ["switched", "disabled"]:
-                        time.sleep(2)
-                        # モデルが変わったので、今のターゲット(current_batch_target)のまま再試行
+                    if action in ("switched", "disabled"):
+                        retry_count = 0
                         continue
-                    else:
-                        time.sleep(interval * 2)
+                    retry_count += 1
+                    retry_after = getattr(response, "headers", {}).get("Retry-After", "")
+                    try:
+                        delay = max(0.0, min(float(retry_after), 60.0))
+                    except (TypeError, ValueError):
+                        delay = min(60.0, interval * (2 ** min(retry_count, 3)))
+                    time.sleep(delay)
+
+                elif response.status_code in (400, 404, 422):
+                    message = response.json().get("error", {}).get("message", "") if response.content else ""
+                    print(f"警告: モデル [{current_model}] は利用できません (HTTP {response.status_code}: {message[:160]})")
+                    selector.disable_model()
+                    retry_count = 0
+                    continue
+
+                elif response.status_code in (401, 403):
+                    raise PermissionError(
+                        f"Gemini APIの認証またはアクセス権限に問題があります (HTTP {response.status_code})"
+                    )
 
                 else:
-                    print(f"APIエラー: {response.status_code} - {response.text}")
+                    print(f"APIエラー: HTTP {response.status_code} (モデル: {current_model})")
                     action = selector.report_failure()
-                    if action in ["switched", "disabled"]:
-                        time.sleep(2)
+                    if action in ("switched", "disabled"):
+                        retry_count = 0
                         continue
-                    time.sleep(2)
                     retry_count += 1
+                    time.sleep(min(60.0, 2 ** min(retry_count, 5)))
 
-            except Exception as e:
+            except PermissionError:
+                raise
+            except requests.RequestException as e:
                 print(f"通信エラー: {e}")
+                action = selector.report_failure()
+                if action in ("switched", "disabled"):
+                    retry_count = 0
+                    continue
                 retry_count += 1
-                time.sleep(2)
+                time.sleep(min(60.0, 2 ** min(retry_count, 5)))
 
             # リトライ上限を超えた場合
-            if (
-                not batch_success
-                and retry_count >= max_retries
-                and (response is None or response.status_code != 429)
-            ):
+            if not batch_success and retry_count >= max_retries:
                 remaining = len(
                     [k for k in current_batch_target if k not in translated_results]
                 )
@@ -663,7 +695,7 @@ def translate_with_gemini(
                     print(
                         f"エラー: {remaining}件 はどうしても翻訳できんかった。悔しいがスキップして進むぞ。"
                     )
-                # 強制的に次へ
+                # 回復しなかった項目はキャッシュせず次へ
                 batch_success = True
                 break
 
