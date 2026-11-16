@@ -105,6 +105,21 @@ class TestGemini(unittest.TestCase):
 
     @patch("mod_translator.time.sleep")
     @patch("mod_translator.requests.post")
+    def test_repeated_invalid_json_switches_models(self, post, sleep):
+        def respond(url, headers, json, timeout):
+            if "gemini-3.8-flash" in url:
+                return response_for({"test": "石"})
+            return response_for({"test": "石 %s"})
+        post.side_effect = respond
+        result = translate_with_gemini(
+            {"test": "Stone %s"}, "key",
+            ModelSelector(["gemini-3.8-flash", "gemini-3.7-flash"])
+        )
+        self.assertEqual(result, {"test": "石 %s"})
+        self.assertEqual(post.call_count, 4)
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
     def test_429_is_finite_without_fallback(self, post, sleep):
         post.return_value = Mock(status_code=429, headers={"Retry-After": "0"})
         with self.assertRaisesRegex(RuntimeError, "すべて失敗"):
