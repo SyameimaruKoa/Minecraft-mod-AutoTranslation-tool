@@ -353,7 +353,16 @@ Write-Host ""
 Write-Log "よし、翻訳開始じゃ！" "Green"
 
 # デバッグ表示用
-$debug_args = $args_list | ForEach-Object { if ($_ -match " ") { """$_""" } else { $_ } }
+$debug_args = for ($i = 0; $i -lt $args_list.Count; $i++) {
+    $arg = [string]$args_list[$i]
+    if ($i -gt 0 -and $args_list[$i - 1] -eq "--key") {
+        $arg = "********"
+    }
+    elseif ($arg -match '^--key=') {
+        $arg = "--key=********"
+    }
+    if ($arg -match " ") { """$arg""" } else { $arg }
+}
 Write-Host "実行コマンド: $PY_EXEC $SCRIPT_NAME $debug_args" -ForegroundColor DarkGray
 Write-Host "--------------------------------------------------"
 
