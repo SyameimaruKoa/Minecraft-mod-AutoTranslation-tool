@@ -142,6 +142,10 @@ class SynchronizedModelSelector:
         with self.lock:
             return self.selector.report_failure(self.context.model)
 
+    def disable_model(self):
+        with self.lock:
+            return self.selector.disable_model(self.context.model)
+
 
 class SharedRequestPacer:
     def __init__(self):
