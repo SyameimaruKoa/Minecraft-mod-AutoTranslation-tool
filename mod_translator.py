@@ -1480,9 +1480,13 @@ def translate_with_plamo(
                         f"{json.dumps(source, ensure_ascii=False)[:140]}"
                     )
                 else:
+                    failure_reason = (
+                        "補助修復モデルが指定されていない"
+                        if repair_executor is None else "修復対象の日本語本文がない"
+                    )
                     report_failure(
                         source, source_keys, rejected_for_repair, raw_plamo_response,
-                        {}, "補助モデルを利用できない・修復対象の日本語本文がない"
+                        {}, failure_reason
                     )
             else:
                 for current_key in source_keys:
