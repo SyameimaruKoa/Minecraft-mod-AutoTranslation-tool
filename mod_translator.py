@@ -619,7 +619,7 @@ def translate_with_gemini(
                                     print(
                                         f"情報: {progress}件 成功。残り {len(remaining_keys)}件 を再試行するのじゃ..."
                                     )
-                                    # 進捗があったならリトライカウントをリセットして、執念深く食らいつく
+                                    selector.report_success()
                                     retry_count = 0
                                     current_batch_target = remaining_keys
                                     time.sleep(2)
@@ -629,6 +629,10 @@ def translate_with_gemini(
                                     print(
                                         f"警告: 進捗なし。残り {len(remaining_keys)}件..."
                                     )
+                                    action = selector.report_failure()
+                                    if action in ("switched", "disabled"):
+                                        retry_count = 0
+                                        continue
                                     retry_count += 1
                                     time.sleep(2)
 
@@ -637,6 +641,10 @@ def translate_with_gemini(
 
                     except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as e:
                         print(f"警告: Gemini応答の解析失敗: {e}")
+                        action = selector.report_failure()
+                        if action in ("switched", "disabled"):
+                            retry_count = 0
+                            continue
                         retry_count += 1
                         time.sleep(2)
 
