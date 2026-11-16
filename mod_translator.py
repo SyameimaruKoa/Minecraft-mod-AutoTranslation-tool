@@ -95,7 +95,7 @@ def _gemini_model_priority(name):
         family = 2
     else:
         return None
-    match = re.search(r"-(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?", lower)
+    match = re.search(r"-(\d+)(?:\.(\d+))?(?:\.(\d+))?", lower)
     version = tuple(int(value or 0) for value in match.groups()) if match else (0, 0, 0)
     is_preview = any(marker in lower for marker in ("preview", "-exp", "experimental"))
     is_alias = not match
@@ -655,7 +655,11 @@ def translate_with_gemini(
                     time.sleep(delay)
 
                 elif response.status_code in (400, 404, 422):
-                    message = response.json().get("error", {}).get("message", "") if response.content else ""
+                    try:
+                        message = response.json().get("error", {}).get("message", "")
+                    except (ValueError, AttributeError, TypeError):
+                        message = ""
+                    message = str(message).replace(api_key, "[REDACTED]")
                     print(f"警告: モデル [{current_model}] は利用できません (HTTP {response.status_code}: {message[:160]})")
                     selector.disable_model()
                     retry_count = 0
