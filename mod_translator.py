@@ -1808,7 +1808,7 @@ class ModTranslator:
     def plamo_source_identity(filename, lang_path, key, source):
         directory, _, basename = lang_path.replace("\\", "/").rpartition("/")
         extension = os.path.splitext(basename)[1].lower()
-        return (filename, directory, language_code_from_path(lang_path), extension, key, source)
+        return (directory, language_code_from_path(lang_path), extension, key, source)
 
     @staticmethod
     def index_plamo_translations(cache, repair_model=None, repair_api_url=None):
