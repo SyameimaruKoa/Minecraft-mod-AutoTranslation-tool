@@ -1731,6 +1731,7 @@ class ModTranslator:
                 raise ValueError("contextファイルにPFML3制御トークンは使用できません")
             self.plamo_cache_file = os.path.join(self.output_dir, "plamo_cache.json")
             self.plamo_cache = load_json(self.plamo_cache_file)
+            self.plamo_source_cache = self.index_plamo_translations(self.plamo_cache)
             self.plamo_failure_file = os.path.join(self.output_dir, "plamo_failures.json")
             self.plamo_failures = load_json(self.plamo_failure_file)
             self.plamo_failure_announced = False
@@ -1803,6 +1804,45 @@ class ModTranslator:
             fields.append(language_code_from_path(lang_path))
         return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
+    @staticmethod
+    def index_plamo_translations(cache):
+        by_source = {}
+        for raw_key, translated in cache.items():
+            try:
+                parts = json.loads(raw_key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parts, list):
+                continue
+            if len(parts) in (8, 9) and parts[0] == "repair":
+                fields = parts[4:]
+            elif len(parts) in (5, 6):
+                fields = parts[1:]
+            else:
+                continue
+            filename, lang_path, key, source = fields[:4]
+            if not all(isinstance(field, str) for field in (filename, lang_path, key, source)):
+                continue
+            source_lang = language_code_from_path(lang_path)
+            if len(fields) == 5 and fields[4] != source_lang:
+                continue
+            if len(fields) == 4 and source_lang != "en":
+                continue
+            if (
+                has_japanese_translation(translated)
+                and plamo_output_is_not_russian(translated)
+                and plamo_format_is_preserved(source, translated)
+            ):
+                by_source[(filename, lang_path, key, source)] = translated
+        return by_source
+
+    def remember_plamo_translation(self, filename, lang_path, key, source, translated):
+        if (
+            has_japanese_translation(translated)
+            and plamo_output_is_not_russian(translated)
+            and plamo_format_is_preserved(source, translated)
+        ):
+            self.plamo_source_cache[(filename, lang_path, key, source)] = translated
     def get_plamo_translation(self, filename, lang_path, key, source):
         if self.plamo_shared_settings_id:
             shared_key = self.plamo_cache_key(
@@ -1848,7 +1888,7 @@ class ModTranslator:
                 cached = self.plamo_cache[previous_key]
                 if plamo_output_is_not_russian(cached):
                     return cached
-        return None
+        return getattr(self, "plamo_source_cache", {}).get((filename, lang_path, key, source))
 
     def plamo_failure_key(self, filename, lang_path, key):
         return json.dumps([filename, lang_path, key], ensure_ascii=False)
@@ -1881,6 +1921,7 @@ class ModTranslator:
         )
         cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
+        self.remember_plamo_translation(filename, lang_path, key, source, translated)
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
@@ -1890,6 +1931,7 @@ class ModTranslator:
             settings_id=self.plamo_shared_settings_id
         )
         self.plamo_cache[cache_key] = translated
+        self.remember_plamo_translation(filename, lang_path, key, source, translated)
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
