@@ -823,6 +823,18 @@ def mask_plamo_format_tokens(source, ignored=()):
     return PLAMO_FORMAT_PATTERN.sub(mask, source), markers
 
 
+def normalize_plamo_format_marker_output(text, markers):
+    """Only restore a uniquely identifiable malformed printf marker."""
+    for marker, original in markers:
+        match = re.fullmatch(r"%(?:\d+\$)?([a-zA-Z])", original)
+        if not match:
+            continue
+        malformed = "%" + marker[1:-1] + "$" + match.group(1)
+        if marker not in text and text.count(malformed) == 1:
+            text = text.replace(malformed, marker)
+    return text
+
+
 def plamo_output_is_not_russian(value):
     if not isinstance(value, str):
         return False
@@ -912,7 +924,9 @@ def translate_plamo_multiline_glossary(
         choice = response.json()["choices"][0]
         if choice.get("finish_reason") == "length":
             return None
-        result = prefix + choice["text"].strip() + suffix
+        result = normalize_plamo_format_marker_output(
+            prefix + choice["text"].strip() + suffix, format_markers
+        )
     except requests.exceptions.ConnectionError as e:
         raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
@@ -1398,7 +1412,9 @@ def translate_with_plamo(
                                 raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
                             raw_plamo_response = choice.get("text")
                             translated = choice["text"].strip()
-                            result = prefix + translated + suffix
+                            result = normalize_plamo_format_marker_output(
+                                prefix + translated + suffix, format_markers
+                            )
                             rejected_for_repair = result
                             if not is_valid_translation(masked_source, result):
                                 raise ValueError("空の翻訳結果、またはエラー文字列")
@@ -1464,9 +1480,13 @@ def translate_with_plamo(
                         f"{json.dumps(source, ensure_ascii=False)[:140]}"
                     )
                 else:
+                    failure_reason = (
+                        "補助修復モデルが指定されていない"
+                        if repair_executor is None else "修復対象の日本語本文がない"
+                    )
                     report_failure(
                         source, source_keys, rejected_for_repair, raw_plamo_response,
-                        {}, "補助モデルを利用できない・修復対象の日本語本文がない"
+                        {}, failure_reason
                     )
             else:
                 for current_key in source_keys:
@@ -1731,6 +1751,7 @@ class ModTranslator:
                 raise ValueError("contextファイルにPFML3制御トークンは使用できません")
             self.plamo_cache_file = os.path.join(self.output_dir, "plamo_cache.json")
             self.plamo_cache = load_json(self.plamo_cache_file)
+            self.plamo_source_cache = self.index_plamo_translations(self.plamo_cache, self.repair_model, self.repair_api_url)
             self.plamo_failure_file = os.path.join(self.output_dir, "plamo_failures.json")
             self.plamo_failures = load_json(self.plamo_failure_file)
             self.plamo_failure_announced = False
@@ -1803,6 +1824,56 @@ class ModTranslator:
             fields.append(language_code_from_path(lang_path))
         return json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
 
+    @staticmethod
+    def plamo_source_identity(filename, lang_path, key, source):
+        directory, _, basename = lang_path.replace("\\", "/").rpartition("/")
+        extension = os.path.splitext(basename)[1].lower()
+        return (directory, language_code_from_path(lang_path), extension, key, source)
+
+    @staticmethod
+    def index_plamo_translations(cache, repair_model=None, repair_api_url=None):
+        by_source = {}
+        for raw_key, translated in cache.items():
+            try:
+                parts = json.loads(raw_key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parts, list):
+                continue
+            if len(parts) in (8, 9) and parts[0] == "repair":
+                if parts[2] != repair_model or parts[3] != repair_api_url:
+                    continue
+                fields = parts[4:]
+            elif len(parts) in (5, 6):
+                fields = parts[1:]
+            else:
+                continue
+            filename, lang_path, key, source = fields[:4]
+            if not all(isinstance(field, str) for field in (filename, lang_path, key, source)):
+                continue
+            source_lang = language_code_from_path(lang_path)
+            if len(fields) == 5 and fields[4] != source_lang:
+                continue
+            if len(fields) == 4 and source_lang != "en":
+                continue
+            if (
+                has_japanese_translation(translated)
+                and plamo_output_is_not_russian(translated)
+                and plamo_format_is_preserved(source, translated)
+            ):
+                identity = ModTranslator.plamo_source_identity(filename, lang_path, key, source)
+                by_source[identity] = translated
+        return by_source
+
+    def remember_plamo_translation(self, filename, lang_path, key, source, translated):
+        if (
+            has_japanese_translation(translated)
+            and plamo_output_is_not_russian(translated)
+            and plamo_format_is_preserved(source, translated)
+        ):
+            identity = self.plamo_source_identity(filename, lang_path, key, source)
+            self.plamo_source_cache[identity] = translated
+
     def get_plamo_translation(self, filename, lang_path, key, source):
         if self.plamo_shared_settings_id:
             shared_key = self.plamo_cache_key(
@@ -1840,6 +1911,10 @@ class ModTranslator:
                         return repaired
         if PLAMO_STYLE_PATTERN.search(source):
             return None
+        identity = self.plamo_source_identity(filename, lang_path, key, source)
+        cached = getattr(self, "plamo_source_cache", {}).get(identity)
+        if cached is not None:
+            return cached
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
             previous_key = self.plamo_cache_key(
                 filename, lang_path, key, source, settings_id
@@ -1881,6 +1956,7 @@ class ModTranslator:
         )
         cache_key = self.plamo_cache_key(filename, lang_path, key, source, settings_id)
         self.plamo_cache[cache_key] = translated
+        self.remember_plamo_translation(filename, lang_path, key, source, translated)
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
@@ -1890,6 +1966,7 @@ class ModTranslator:
             settings_id=self.plamo_shared_settings_id
         )
         self.plamo_cache[cache_key] = translated
+        self.remember_plamo_translation(filename, lang_path, key, source, translated)
         save_json(self.plamo_cache_file, self.plamo_cache)
         self.resolve_plamo_failure(filename, lang_path, key)
 
