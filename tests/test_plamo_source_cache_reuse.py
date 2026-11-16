@@ -108,6 +108,9 @@ class PlamoSourceCacheReuseTests(unittest.TestCase):
             self.make_mod(mods, "Stone")
             translator = ModTranslator(self.make_args(mods, output, "plamo"))
             translator.save_plamo_translation(
+                "example.jar", "assets/demo/lang/en_us.json", "a", "Stone", "石"
+            )
+            translator.save_plamo_translation(
                 "example.jar", "assets/demo/lang/en_us.json", "b", "Iron", "AI鉄"
             )
             with patch("mod_translator.requests.post") as post:
