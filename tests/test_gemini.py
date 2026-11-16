@@ -184,6 +184,34 @@ class TestGemini(unittest.TestCase):
         batches = _gemini_batches({"a": "A" * 1400, "b": "B" * 1400, "c": "C"}, 8)
         self.assertEqual([list(batch) for batch in batches], [["a"], ["b", "c"]])
 
+    @patch("mod_translator.requests.get")
+    def test_invalid_key_is_identified_and_never_logged(self, get):
+        secret = "private-fake-key"
+        get.return_value = Mock(status_code=400, json=Mock(return_value={
+            "error": {
+                "status": "INVALID_ARGUMENT",
+                "message": f"API key not valid: {secret}",
+                "details": [{"reason": "API_KEY_INVALID"}]
+            }
+        }))
+        with self.assertRaises(RuntimeError) as error:
+            get_available_gemini_models(secret)
+        self.assertIn("APIキーが無効", str(error.exception))
+        self.assertIn("[C]", str(error.exception))
+        self.assertNotIn(secret, str(error.exception))
+
+    @patch("mod_translator.requests.get")
+    def test_bad_request_exposes_error_details_without_api_key(self, get):
+        secret = "private-fake-key"
+        get.return_value = Mock(status_code=400, json=Mock(return_value={
+            "error": {"status": "INVALID_ARGUMENT", "message": f"Invalid pageSize: {secret}"}
+        }))
+        with self.assertRaises(RuntimeError) as error:
+            get_available_gemini_models(secret)
+        self.assertIn("Invalid pageSize", str(error.exception))
+        self.assertIn("[REDACTED]", str(error.exception))
+        self.assertNotIn(secret, str(error.exception))
+
     @patch("mod_translator.requests.post")
     def test_invalid_api_key_stops_immediately(self, post):
         post.return_value = Mock(status_code=401)
