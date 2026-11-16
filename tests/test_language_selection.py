@@ -350,6 +350,18 @@ class LanguageSelectionTests(unittest.TestCase):
             ModTranslator(args).run()
             self.assertEqual(post.call_count, 2)
 
+            os.unlink(os.path.join(output, "mod_scan_cache.json"))
+            os.unlink(os.path.join(output, "plamo_cache.json"))
+            ModTranslator(args).run()
+            self.assertEqual(post.call_count, 4)
+            with open(out_file, encoding="utf-8") as stream:
+                self.assertEqual(json.load(stream), {
+                    "already": "鉄インゴット",
+                    "untranslated": "鋼鉄の粉",
+                    "missing": "銅インゴット",
+                    "extra": "追加の日本語"
+                })
+
     @patch("mod_translator.requests.post")
     def test_cyrillic_only_response_is_retried_for_japanese(self, post):
         responses = ["Камень", "石"]
