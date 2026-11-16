@@ -1853,6 +1853,7 @@ class ModTranslator:
         ):
             identity = self.plamo_source_identity(filename, lang_path, key, source)
             self.plamo_source_cache[identity] = translated
+
     def get_plamo_translation(self, filename, lang_path, key, source):
         if self.plamo_shared_settings_id:
             shared_key = self.plamo_cache_key(
@@ -1888,6 +1889,10 @@ class ModTranslator:
                     repaired = self.plamo_cache[repair_key]
                     if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
                         return repaired
+        identity = self.plamo_source_identity(filename, lang_path, key, source)
+        cached = getattr(self, "plamo_source_cache", {}).get(identity)
+        if cached is not None:
+            return cached
         if PLAMO_STYLE_PATTERN.search(source):
             return None
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
@@ -1898,8 +1903,7 @@ class ModTranslator:
                 cached = self.plamo_cache[previous_key]
                 if plamo_output_is_not_russian(cached):
                     return cached
-        identity = self.plamo_source_identity(filename, lang_path, key, source)
-        return getattr(self, "plamo_source_cache", {}).get(identity)
+        return None
 
     def plamo_failure_key(self, filename, lang_path, key):
         return json.dumps([filename, lang_path, key], ensure_ascii=False)
