@@ -109,11 +109,11 @@ function Set-Env-Variable {
     if (Test-Path -LiteralPath $ENV_FILE) {
         $lines = @(Get-Content -LiteralPath $ENV_FILE -Encoding UTF8)
     }
-    $keyPattern = "^\\s*$([regex]::Escape($Key))\\s*="
+    $keyPattern = '^\s*' + [regex]::Escape($Key) + '\s*='
     $lines = @($lines | Where-Object { $_ -notmatch $keyPattern })
     $lines += "$Key=$Value"
     $absolutePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ENV_FILE)
-    [System.IO.File]::WriteAllLines($absolutePath, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllLines($absolutePath, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Read-GeminiApiKey {
@@ -220,172 +220,13 @@ switch ($engine_choice) {
     "2" {
         $args_list += "--engine", "gemini"
         
-        # 保存済みのキーをそのまま使うか、必要に応じて更新する。
+        # 保存済みキーの再利用または変更
         $env_key = Get-Env-Variable "GEMINI_API_KEY"
         $change_key = [string]::IsNullOrWhiteSpace($env_key)
         if (-not $change_key) {
             Write-Log ".envファイルにGemini APIキーが登録されておる。" "Green"
             $key_choice = Read-Host " [Enter] 保存済みキーを使う / [C] 新しいキーに変更"
-            $change_key = $key_choice -match '^[Cc]
-        $args_list += "--key", "$api_key"
-
-        Write-Host ""
-        Write-Host "Gemma限定モードを使うか？" -ForegroundColor Yellow
-        Write-Host " (Geminiが使えない時や、確実なGemmaモデルのみで回すモードじゃ)"
-        $gemma_check = Read-Host " [Y] Yes / [N] No"
-        if ($gemma_check -match "^[Yy]") {
-            $args_list += "--gemma-only"
-            Write-Log "Gemma限定モード: ON" "Cyan"
-        }
-    }
-    "3" {
-        Write-Host " [1] Ollama"
-        Write-Host " [2] LM Studio"
-        $local_type = Read-Host "どちらを使う？ [1-2]"
-        if ($local_type -eq "2") {
-            $args_list += "--engine", "lmstudio"
-            Write-Log "LM Studioモード: 事前にサーバー(port 1234)を起動しておくのじゃぞ。" "Yellow"
-        }
-        else {
-            $args_list += "--engine", "ollama"
-            $model_name = Read-Host "使用するモデル名を入力 (例: gemma2:9b / 空欄でデフォルト)"
-            if (-not [string]::IsNullOrWhiteSpace($model_name)) {
-                $args_list += "--model", "$model_name"
-            }
-        }
-    }
-    "4" {
-        $args_list += "--engine", "plamo"
-        Write-Log "PLaMoモデルはLM Studioでロード済みのものを自動検出するのじゃ。" "Cyan"
-        $repair_model = Read-Host "構文修復用モデルID（Enterで修復なし。例: lfm2.5-350m）"
-        if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
-            $args_list += "--repair-model", "$repair_model"
-            Write-Log "未ロードのモデルはLM Studioで手動ロードするまで待機するのじゃ。" "Cyan"
-        }
-        $advanced_choice = Read-Host "詳細設定を変更する？ [y/N]"
-        if ($advanced_choice -match "^[yY]$") {
-            $plamo_url = Read-Host "Completions API URL (Enterで http://127.0.0.1:1234/v1/completions)"
-            if (-not [string]::IsNullOrWhiteSpace($plamo_url)) {
-                $args_list += "--plamo-api-url", "$plamo_url"
-            }
-            $excluded_devices = Read-Host "除外するLM Linkデバイス名またはID（カンマ区切り / Enterですべて使用）"
-            if (-not [string]::IsNullOrWhiteSpace($excluded_devices)) {
-                $args_list += "--exclude-devices", "$excluded_devices"
-            }
-            $plamo_form = Read-Host "日本語の文体: [1] 常体（標準）/ [2] 敬体"
-            if ($plamo_form -eq "2") {
-                $args_list += "--plamo-form", "polite"
-            }
-            $plamo_glossary = Read-Host "用語集JSONのパス（空欄でなし）"
-            if (-not [string]::IsNullOrWhiteSpace($plamo_glossary)) {
-                $plamo_glossary = $plamo_glossary -replace '"', ''
-                if (-not (Test-Path -LiteralPath $plamo_glossary -PathType Leaf)) {
-                    Write-Log "エラー: 用語集ファイルが見つからぬぞ: $plamo_glossary" "Red"
-                    exit 1
-                }
-                $args_list += "--plamo-glossary", "$plamo_glossary"
-            }
-            $plamo_context = Read-Host "参考文脈のUTF-8テキストファイル（空欄で自動文脈のみ）"
-            if (-not [string]::IsNullOrWhiteSpace($plamo_context)) {
-                $plamo_context = $plamo_context -replace '"', ''
-                if (-not (Test-Path -LiteralPath $plamo_context -PathType Leaf)) {
-                    Write-Log "エラー: 文脈ファイルが見つからぬぞ: $plamo_context" "Red"
-                    exit 1
-                }
-                $args_list += "--plamo-context-file", "$plamo_context"
-            }
-            $plamo_history = Read-Host "直前の対訳を何件参考にするか？ [Enter: 3 / 0: 無効 / 最大10]"
-            if (-not [string]::IsNullOrWhiteSpace($plamo_history)) {
-                if ($plamo_history -notmatch '^\d+$' -or [int]$plamo_history -gt 10) {
-                    Write-Log "エラー: 履歴数は0から10の整数を入力するのじゃ。" "Red"
-                    exit 1
-                }
-                $args_list += "--plamo-history", "$plamo_history"
-            }
-            if (-not [string]::IsNullOrWhiteSpace($repair_model)) {
-                $repair_url = Read-Host "修復モデルのChat Completions API URL（Enterで http://localhost:1234/v1/chat/completions）"
-                if (-not [string]::IsNullOrWhiteSpace($repair_url)) {
-                    $args_list += "--repair-api-url", "$repair_url"
-                }
-            }
-        }
-    }
-    Default {
-        Write-Log "よくわからん入力をしたな。Google翻訳にしておくぞ。" "Yellow"
-        $args_list += "--engine", "google"
-    }
-}
-if ($engine_choice -in @("2", "3", "4")) {
-    $effectiveWorkers = if ($Workers -eq "auto" -and $engine_choice -ne "4") { "2" } else { $Workers }
-    $args_list += "--workers", "$effectiveWorkers"
-    Write-Log "LLM並列数: $effectiveWorkers" "Cyan"
-}
-#endregion
-
-#region 入出力パス設定
-# 4. フォルダパスの入力
-if ([string]::IsNullOrWhiteSpace($InputPath)) {
-    Write-Host ""
-    Write-Host "翻訳対象のMod/Shaderフォルダをドラッグ＆ドロップせよ:" -ForegroundColor Green
-    $InputPath = Read-Host "> "
-}
-$InputPath = $InputPath -replace '"', ''
-
-if (-not (Test-Path $InputPath)) {
-    Write-Log "エラー: そのフォルダは見つからぬぞ: $InputPath" "Red"
-    Write-Host "何かキーを押すと終了します..." -NoNewline
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    exit
-}
-$args_list += "--input", "$InputPath"
-
-# 5. 出力先
-if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    Write-Host ""
-    Write-Host "出力先リソースパック名（またはフルパス）を入力せよ:" -ForegroundColor Green
-    $OutputPath = Read-Host "> "
-    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-        $OutputPath = "Output_Pack"
-    }
-}
-$OutputPath = $OutputPath -replace '"', ''
-$args_list += "--output", "$OutputPath"
-#endregion
-
-#region スクリプト実行
-# 6. Pythonスクリプト実行
-Write-Host ""
-Write-Log "よし、翻訳開始じゃ！" "Green"
-
-# デバッグ表示用
-$debug_args = for ($i = 0; $i -lt $args_list.Count; $i++) {
-    $arg = [string]$args_list[$i]
-    if ($i -gt 0 -and $args_list[$i - 1] -eq "--key") {
-        $arg = "********"
-    }
-    elseif ($arg -match '^--key=') {
-        $arg = "--key=********"
-    }
-    if ($arg -match " ") { """$arg""" } else { $arg }
-}
-Write-Host "実行コマンド: $PY_EXEC $SCRIPT_NAME $debug_args" -ForegroundColor DarkGray
-Write-Host "--------------------------------------------------"
-
-& $PY_EXEC $SCRIPT_NAME @args_list
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Log "エラー: 翻訳スクリプトが異常終了したようじゃ。" "Red"
-    Write-Host "上記のエラーメッセージを確認するのじゃ。" -ForegroundColor Red
-}
-else {
-    Write-Host ""
-    Write-Log "処理完了じゃ。お疲れ様。" "Green"
-}
-
-Write-Host "何かキーを押すと終了します..." -NoNewline
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-#endregion
+            $change_key = $key_choice -match '^[Cc]$'
         }
         if ($change_key) {
             $api_key = Read-GeminiApiKey
@@ -393,13 +234,8 @@ $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                 Write-Log "API Keyがないと動かぬぞ。終了じゃ。" "Red"
                 exit 1
             }
-
-            # キー変更時は既定で保存する。初回入力時は従来どおり確認する。
-            $save_key = $false
-            if (-not [string]::IsNullOrWhiteSpace($env_key)) {
-                $save_key = $true
-            }
-            else {
+            $save_key = -not [string]::IsNullOrWhiteSpace($env_key)
+            if (-not $save_key) {
                 Write-Host "このAPIキーを .env ファイルに保存しておくか？(次回から入力を省略できるぞ)" -ForegroundColor Yellow
                 $save_env = Read-Host " [Y] Yes / [N] No"
                 $save_key = $save_env -match '^[Yy]'
