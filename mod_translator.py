@@ -171,6 +171,19 @@ def get_prioritized_models(api_key, gemma_only=False):
         and (not gemma_only or name.lower().startswith("gemma-"))
     ]
     models.sort(key=_gemini_model_priority)
+    if models and not gemma_only:
+        # 同一系統が過負荷でも別の系統へ早く到達できるようにする。
+        groups = {}
+        for name in models:
+            rank = _gemini_model_priority(name)
+            groups.setdefault((rank[0], rank[1]), deque()).append(name)
+        models = []
+        for is_preview in (False, True):
+            while any(groups.get((is_preview, family)) for family in (0, 1, 2)):
+                for family in (0, 1, 2):
+                    group = groups.get((is_preview, family))
+                    if group:
+                        models.append(group.popleft())
     if not models:
         kind = "Gemma" if gemma_only else "Gemini / Gemma"
         raise RuntimeError(f"翻訳に使用できる{kind}モデルがAPIから返されませんでした")
@@ -251,6 +264,9 @@ class ModelSelector:
         self.failure_counts = {m: 0 for m in models}  # モデルごとの連続失敗回数
         self.fallback_start_time = None  # フォールバック開始時刻
 
+    def model_count(self):
+        return len(self.models)
+
     def get_current_model(self):
         """現在使用すべきモデルを返す。必要に応じて復帰やスキップを行う。"""
 
@@ -327,6 +343,18 @@ class ModelSelector:
             return "switched"
 
         return "continue"
+
+    def report_unavailable(self, model_name=None):
+        """503やタイムアウト時は同じモデルを繰り返さず、次の候補を試す。"""
+        if self.current_idx >= len(self.models):
+            return "continue"
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return "continue"
+        print(f"警告: モデル [{model}] が応答しないため次のモデルへ切り替えます。")
+        self.failure_counts[model] = 0
+        self._switch_to_next()
+        return "switched"
 
     def disable_model(self, model_name=None):
         """永続的なモデルエラーでは直ちに候補から除外する。"""
@@ -582,14 +610,15 @@ def translate_with_gemini(
         retry_count = 0
         max_retries = 3  # モデルごとのリトライ回数
         request_attempts = 0
-        max_attempts = 12  # 複数モデルの429を含め、無限リトライを防ぐ
+        max_attempts = max(12, selector.model_count() * 3)  # 複数モデルの切替も許容
 
         # バッチ内ループ（全員救出するまで、あるいは諦めるまで回る）
         while not batch_success:
             if request_attempts >= max_attempts:
-                print(f"エラー: Geminiの再試行上限に達しました。残り{len(current_batch_target)}件をスキップします。")
-                batch_success = True
-                break
+                raise RuntimeError(
+                    f"Geminiが応答せず再試行上限に達しました。"
+                    f"未翻訳{len(current_batch_target)}件は翻訳成功として保存しません"
+                )
             current_model = selector.get_current_model()
             _, interval = get_model_settings(current_model)
             response = None
@@ -755,6 +784,12 @@ def translate_with_gemini(
                         f"Gemini APIの認証またはアクセス権限に問題があります (HTTP {response.status_code})"
                     )
 
+                elif response.status_code in (502, 503, 504):
+                    print(f"警告: Gemini API HTTP {response.status_code} (モデル: {current_model})")
+                    selector.report_unavailable()
+                    retry_count = 0
+                    continue
+
                 else:
                     print(f"APIエラー: HTTP {response.status_code} (モデル: {current_model})")
                     action = selector.report_failure()
@@ -765,23 +800,20 @@ def translate_with_gemini(
                     time.sleep(min(60.0, 2 ** min(retry_count, 5)))
 
             except requests.exceptions.Timeout:
+                selector.report_unavailable()
                 if len(current_batch_target) > 1:
                     half = len(current_batch_target) // 2
                     pending.appendleft(current_batch_target[half:])
                     current_batch_target = current_batch_target[:half]
-                    retry_count = 0
                     request_attempts = 0
                     print(
                         f"警告: Gemini応答タイムアウト [{current_model}]。"
-                        f"バッチを{len(current_batch_target)}件に分割して再試行します。"
+                        f"次のモデルで{len(current_batch_target)}件ずつ再試行します。"
                     )
-                    continue
-                print(f"警告: Gemini応答タイムアウト [{current_model}] (1件)")
-                action = selector.report_failure()
-                if action in ("switched", "disabled"):
-                    retry_count = 0
-                    continue
-                retry_count += 1
+                else:
+                    print(f"警告: Gemini応答タイムアウト [{current_model}] (1件)")
+                retry_count = 0
+                continue
 
             except PermissionError:
                 raise
@@ -803,9 +835,10 @@ def translate_with_gemini(
                     print(
                         f"エラー: {remaining}件 はどうしても翻訳できんかった。悔しいがスキップして進むぞ。"
                     )
-                # 回復しなかった項目はキャッシュせず次へ
-                batch_success = True
-                break
+                # 別のモデルを試す。どの候補も使えなければエラーとして停止する。
+                selector.report_unavailable()
+                retry_count = 0
+                continue
 
         # 進捗計算
         processed = len(translated_results)
