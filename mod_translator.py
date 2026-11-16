@@ -823,6 +823,18 @@ def mask_plamo_format_tokens(source, ignored=()):
     return PLAMO_FORMAT_PATTERN.sub(mask, source), markers
 
 
+def normalize_plamo_format_marker_output(text, markers):
+    """Only restore a uniquely identifiable malformed printf marker."""
+    for marker, original in markers:
+        match = re.fullmatch(r"%(?:\d+\$)?([a-zA-Z])", original)
+        if not match:
+            continue
+        malformed = "%" + marker[1:-1] + "$" + match.group(1)
+        if marker not in text and text.count(malformed) == 1:
+            text = text.replace(malformed, marker)
+    return text
+
+
 def plamo_output_is_not_russian(value):
     if not isinstance(value, str):
         return False
@@ -912,7 +924,9 @@ def translate_plamo_multiline_glossary(
         choice = response.json()["choices"][0]
         if choice.get("finish_reason") == "length":
             return None
-        result = prefix + choice["text"].strip() + suffix
+        result = normalize_plamo_format_marker_output(
+            prefix + choice["text"].strip() + suffix, format_markers
+        )
     except requests.exceptions.ConnectionError as e:
         raise RuntimeError(f"PLaMoサーバーに接続できません: {api_url}") from e
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as e:
@@ -1398,7 +1412,9 @@ def translate_with_plamo(
                                 raise ValueError("翻訳がトークン上限に到達。生成上限を増やして再試行")
                             raw_plamo_response = choice.get("text")
                             translated = choice["text"].strip()
-                            result = prefix + translated + suffix
+                            result = normalize_plamo_format_marker_output(
+                                prefix + translated + suffix, format_markers
+                            )
                             rejected_for_repair = result
                             if not is_valid_translation(masked_source, result):
                                 raise ValueError("空の翻訳結果、またはエラー文字列")
