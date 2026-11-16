@@ -150,7 +150,7 @@ class TestGemini(unittest.TestCase):
         calls = []
 
         def respond(url, headers, json, timeout):
-            batch = __import__("json").loads(json["contents"][0]["parts"][0]["text"].split("\\n\\n", 1)[1])
+            batch = __import__("json").loads(json["contents"][0]["parts"][0]["text"].split("\n\n", 1)[1])
             calls.append((url, list(batch)))
             self.assertEqual(timeout, (10, 45))
             if "gemini-3.8-flash" in url:
