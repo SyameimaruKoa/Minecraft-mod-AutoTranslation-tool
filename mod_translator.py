@@ -10,6 +10,7 @@ import traceback
 import threading
 import math
 import queue
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA, ClusterETA
@@ -71,12 +72,12 @@ def get_model_settings(model_name):
     if name.startswith("gemma-"):
         return 5, 2.1
     if "flash-lite" in name:
-        return 40, 5.0
+        return 8, 5.0
     if "flash" in name:
-        return 40, 6.2
+        return 8, 6.2
     if "pro" in name:
-        return 40, 10.0
-    return 30, 5.0
+        return 6, 10.0
+    return 8, 5.0
 
 
 def _gemini_model_priority(name):
@@ -475,6 +476,32 @@ def translate_google_batch(text_list):
         return text_list
 
 
+def _gemini_thinking_config(model_name):
+    name = model_name.removeprefix("models/").lower()
+    if re.match(r"^gemini-3(?:[.-]|$)", name):
+        return {"thinkingLevel": "low"}
+    if name.startswith("gemini-2.5-flash") and "lite" not in name:
+        return {"thinkingBudget": 0}
+    return None
+
+
+def _gemini_batches(text_dict, max_items, max_chars=2400):
+    batches = []
+    current = {}
+    length = 0
+    for key, value in text_dict.items():
+        item_length = len(str(key)) + len(str(value)) + 8
+        if current and (len(current) >= max_items or length + item_length > max_chars):
+            batches.append(current)
+            current = {}
+            length = 0
+        current[key] = value
+        length += item_length
+    if current:
+        batches.append(current)
+    return batches
+
+
 def translate_with_gemini(
     text_dict, api_key, selector, workers=1, request_gate=None, show_progress=True
 ):
@@ -504,19 +531,20 @@ def translate_with_gemini(
     translated_results = {}
     keys = list(text_dict.keys())
     total = len(keys)
-    current_idx = 0
+    pending = deque(list(batch) for batch in _gemini_batches(text_dict, get_model_settings(selector.get_current_model())[0]))
 
     start_time = time.time()
     json_mime_unsupported = set()
+    thinking_unsupported = set()
     if show_progress:
         print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
-    while current_idx < total:
+    while pending:
         current_model = selector.get_current_model()
         batch_size, interval = get_model_settings(current_model)
 
-        # 本来このループで処理すべきキーのリスト
-        original_batch_keys = keys[current_idx : current_idx + batch_size]
+        # 未処理項目を保持し、タイムアウトで分割しても取りこぼさない。
+        original_batch_keys = pending.popleft()
 
         # 実際にリクエストを送るターゲット（リトライ時に減っていく）
         current_batch_target = list(original_batch_keys)
@@ -554,13 +582,20 @@ def translate_with_gemini(
                 url = GEMINI_API_URL.format(current_model.removeprefix("models/"))
                 headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
                 payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                config = {}
                 if current_model not in json_mime_unsupported:
-                    payload["generationConfig"] = {"responseMimeType": "application/json"}
+                    config["responseMimeType"] = "application/json"
+                if current_model not in thinking_unsupported:
+                    thinking = _gemini_thinking_config(current_model)
+                    if thinking:
+                        config["thinkingConfig"] = thinking
+                if config:
+                    payload["generationConfig"] = config
 
                 if request_gate:
                     request_gate.wait(current_model, interval)
                 request_attempts += 1
-                response = requests.post(url, headers=headers, json=payload, timeout=90)
+                response = requests.post(url, headers=headers, json=payload, timeout=(10, 45))
 
                 if response.status_code == 200:
                     try:
@@ -621,6 +656,7 @@ def translate_with_gemini(
                                     )
                                     selector.report_success()
                                     retry_count = 0
+                                    request_attempts = 0
                                     current_batch_target = remaining_keys
                                     time.sleep(2)
                                     continue  # ループ継続
@@ -662,12 +698,27 @@ def translate_with_gemini(
                         delay = min(60.0, interval * (2 ** min(retry_count, 3)))
                     time.sleep(delay)
 
-                elif response.status_code == 400 and "generationConfig" in payload:
-                    json_mime_unsupported.add(current_model)
-                    print(f"情報: モデル [{current_model}] はJSON形式指定なしで再試行します。")
+                elif response.status_code == 400:
+                    try:
+                        message = str(response.json().get("error", {}).get("message", "")).lower()
+                    except (ValueError, AttributeError, TypeError):
+                        message = ""
+                    if "thinking" in message and "thinkingConfig" in config:
+                        thinking_unsupported.add(current_model)
+                        print(f"情報: [{current_model}] 思考量指定を外して再試行します。")
+                        continue
+                    if "responseMimeType" in config and any(
+                        term in message for term in ("json", "responsemime", "response_mime")
+                    ):
+                        json_mime_unsupported.add(current_model)
+                        print(f"情報: [{current_model}] JSON形式指定を外して再試行します。")
+                        continue
+                    print(f"警告: モデル [{current_model}] はリクエストを拒否しました (HTTP 400)")
+                    selector.disable_model()
+                    retry_count = 0
                     continue
 
-                elif response.status_code in (400, 404, 422):
+                elif response.status_code in (404, 422):
                     try:
                         message = response.json().get("error", {}).get("message", "")
                     except (ValueError, AttributeError, TypeError):
@@ -691,6 +742,25 @@ def translate_with_gemini(
                         continue
                     retry_count += 1
                     time.sleep(min(60.0, 2 ** min(retry_count, 5)))
+
+            except requests.exceptions.Timeout:
+                if len(current_batch_target) > 1:
+                    half = len(current_batch_target) // 2
+                    pending.appendleft(current_batch_target[half:])
+                    current_batch_target = current_batch_target[:half]
+                    retry_count = 0
+                    request_attempts = 0
+                    print(
+                        f"警告: Gemini応答タイムアウト [{current_model}]。"
+                        f"バッチを{len(current_batch_target)}件に分割して再試行します。"
+                    )
+                    continue
+                print(f"警告: Gemini応答タイムアウト [{current_model}] (1件)")
+                action = selector.report_failure()
+                if action in ("switched", "disabled"):
+                    retry_count = 0
+                    continue
+                retry_count += 1
 
             except PermissionError:
                 raise
@@ -717,9 +787,7 @@ def translate_with_gemini(
                 break
 
         # 進捗計算
-        processed = current_idx + len(original_batch_keys)
-        if processed > total:
-            processed = total  # 表示用補正
+        processed = len(translated_results)
 
         percent = (processed / total) * 100
         elapsed_time = time.time() - start_time
@@ -739,12 +807,10 @@ def translate_with_gemini(
                 f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str} - 使用中: {current_model}"
             )
 
-        if batch_success:
-            current_idx += len(original_batch_keys)
-            if request_gate is None:
-                time.sleep(interval)
+        if batch_success and request_gate is None and pending:
+            time.sleep(interval)
 
-    return translated_results
+    return {key: translated_results[key] for key in keys if key in translated_results}
 
 
 def load_plamo_glossary(path):
