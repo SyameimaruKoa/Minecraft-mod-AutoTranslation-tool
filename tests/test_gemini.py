@@ -143,6 +143,47 @@ class TestGemini(unittest.TestCase):
         self.assertIn("generationConfig", post.call_args_list[0].kwargs["json"])
         self.assertNotIn("generationConfig", post.call_args_list[1].kwargs["json"])
 
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_read_timeout_splits_without_losing_or_repeating_keys(self, post, sleep):
+        from requests.exceptions import ReadTimeout
+        calls = []
+
+        def respond(url, headers, json, timeout):
+            batch = __import__("json").loads(json["contents"][0]["parts"][0]["text"].split("\n\n", 1)[1])
+            calls.append(list(batch))
+            self.assertEqual(timeout, (10, 45))
+            if len(batch) > 1:
+                raise ReadTimeout("read timeout")
+            return response_for({key: value + "訳" for key, value in batch.items()})
+
+        post.side_effect = respond
+        source = {"a": "Stone", "b": "Grass", "c": "Coal", "d": "Iron"}
+        actual = translate_with_gemini(source, "key", ModelSelector(["gemini-3.8-flash"]))
+        self.assertEqual(actual, {key: value + "訳" for key, value in source.items()})
+        self.assertEqual(post.call_count, 7)
+        self.assertEqual([batch[0] for batch in calls if len(batch) == 1], list(source))
+
+    @patch("mod_translator.requests.post")
+    def test_flash_requests_low_thinking(self, post):
+        post.return_value = response_for({"test": "石"})
+        translate_with_gemini({"test": "Stone"}, "key", ModelSelector(["gemini-3.8-flash"]))
+        config = post.call_args.kwargs["json"]["generationConfig"]
+        self.assertEqual(config["thinkingConfig"], {"thinkingLevel": "low"})
+
+    @patch("mod_translator.requests.post")
+    def test_25_flash_disables_thinking(self, post):
+        post.return_value = response_for({"test": "石"})
+        translate_with_gemini({"test": "Stone"}, "key", ModelSelector(["gemini-2.5-flash"]))
+        config = post.call_args.kwargs["json"]["generationConfig"]
+        self.assertEqual(config["thinkingConfig"], {"thinkingBudget": 0})
+
+    @patch("mod_translator.requests.post")
+    def test_batch_size_caps_request_character_budget(self, post):
+        from mod_translator import _gemini_batches
+        batches = _gemini_batches({"a": "A" * 1400, "b": "B" * 1400, "c": "C"}, 8)
+        self.assertEqual([list(batch) for batch in batches], [["a"], ["b", "c"]])
+
     @patch("mod_translator.requests.post")
     def test_invalid_api_key_stops_immediately(self, post):
         post.return_value = Mock(status_code=401)
