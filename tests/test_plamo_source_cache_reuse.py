@@ -108,6 +108,25 @@ class PlamoSourceCacheReuseTests(unittest.TestCase):
                 )
             )
 
+    def test_same_namespace_and_source_survive_mod_filename_change(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
+            old.save_plamo_translation(
+                "demo-1.0.jar", "assets/demo/lang/en_us.json", "a", "Stone", "石"
+            )
+            new = ModTranslator(self.make_args(folder, folder, "plamo-new"))
+            self.assertEqual(
+                new.get_plamo_translation(
+                    "demo-2.0.jar", "assets/demo/lang/en_us.json", "a", "Stone"
+                ),
+                "石"
+            )
+            self.assertIsNone(
+                new.get_plamo_translation(
+                    "demo-2.0.jar", "assets/other/lang/en_us.json", "a", "Stone"
+                )
+            )
+
     def test_repair_cache_from_old_settings_is_reused(self):
         with tempfile.TemporaryDirectory() as folder:
             old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
