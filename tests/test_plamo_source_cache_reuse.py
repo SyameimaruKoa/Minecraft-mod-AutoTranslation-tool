@@ -88,6 +88,20 @@ class PlamoSourceCacheReuseTests(unittest.TestCase):
                 )
             )
 
+    def test_styled_translation_uses_valid_historical_cache(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
+            old.save_plamo_translation(
+                "example.jar", "assets/demo/lang/en_us.json", "a", "§aStone", "§a石"
+            )
+            new = ModTranslator(self.make_args(folder, folder, "plamo-new"))
+            self.assertEqual(
+                new.get_plamo_translation(
+                    "example.jar", "assets/demo/lang/en_us.json", "a", "§aStone"
+                ),
+                "§a石"
+            )
+
     def test_repair_cache_from_old_settings_is_reused(self):
         with tempfile.TemporaryDirectory() as folder:
             old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
