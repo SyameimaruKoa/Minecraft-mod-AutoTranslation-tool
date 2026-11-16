@@ -1889,12 +1889,12 @@ class ModTranslator:
                     repaired = self.plamo_cache[repair_key]
                     if has_japanese_translation(repaired) and plamo_format_is_preserved(source, repaired):
                         return repaired
+        if PLAMO_STYLE_PATTERN.search(source):
+            return None
         identity = self.plamo_source_identity(filename, lang_path, key, source)
         cached = getattr(self, "plamo_source_cache", {}).get(identity)
         if cached is not None:
             return cached
-        if PLAMO_STYLE_PATTERN.search(source):
-            return None
         for settings_id in (self.plamo_previous_settings_id, self.plamo_legacy_settings_id):
             previous_key = self.plamo_cache_key(
                 filename, lang_path, key, source, settings_id
