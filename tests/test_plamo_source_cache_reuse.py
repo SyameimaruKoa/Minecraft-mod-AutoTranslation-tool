@@ -64,6 +64,30 @@ class PlamoSourceCacheReuseTests(unittest.TestCase):
             with open(path, encoding="utf-8") as stream:
                 self.assertEqual(json.load(stream), {"a": "花崗岩", "b": "鉄"})
 
+    def test_reuse_when_selected_english_locale_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
+            old.save_plamo_translation(
+                "example.jar", "assets/demo/lang/en_us.json", "a", "Stone", "石"
+            )
+            new = ModTranslator(self.make_args(folder, folder, "plamo-new"))
+            self.assertEqual(
+                new.get_plamo_translation(
+                    "example.jar", "assets/demo/lang/en_au.json", "a", "Stone"
+                ),
+                "石"
+            )
+            self.assertIsNone(
+                new.get_plamo_translation(
+                    "example.jar", "assets/demo/lang/fr_fr.json", "a", "Stone"
+                )
+            )
+            self.assertIsNone(
+                new.get_plamo_translation(
+                    "example.jar", "assets/other/lang/en_us.json", "a", "Stone"
+                )
+            )
+
     def test_repair_cache_from_old_settings_is_reused(self):
         with tempfile.TemporaryDirectory() as folder:
             old = ModTranslator(self.make_args(folder, folder, "plamo-old"))
