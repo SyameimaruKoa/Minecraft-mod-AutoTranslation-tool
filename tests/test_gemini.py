@@ -113,6 +113,21 @@ class TestGemini(unittest.TestCase):
             )
         self.assertEqual(post.call_count, 3)
 
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_json_mode_rejection_retries_without_generation_config(self, post, sleep):
+        post.side_effect = [
+            Mock(status_code=400, json=Mock(return_value={"error": {"message": "JSON mode not supported"}})),
+            response_for({"test": "石"})
+        ]
+        result = translate_with_gemini(
+            {"test": "Stone"}, "key", ModelSelector(["gemma-4-26b-a4b-it"])
+        )
+        self.assertEqual(result, {"test": "石"})
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("generationConfig", post.call_args_list[0].kwargs["json"])
+        self.assertNotIn("generationConfig", post.call_args_list[1].kwargs["json"])
+
     @patch("mod_translator.requests.post")
     def test_invalid_api_key_stops_immediately(self, post):
         post.return_value = Mock(status_code=401)
