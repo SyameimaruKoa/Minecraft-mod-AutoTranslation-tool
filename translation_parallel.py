@@ -128,6 +128,9 @@ class SynchronizedModelSelector:
         self.lock = threading.RLock()
         self.context = threading.local()
 
+    def model_count(self):
+        return self.selector.model_count()
+
     def get_current_model(self):
         with self.lock:
             model = self.selector.get_current_model()
@@ -145,6 +148,10 @@ class SynchronizedModelSelector:
     def disable_model(self):
         with self.lock:
             return self.selector.disable_model(self.context.model)
+
+    def report_unavailable(self):
+        with self.lock:
+            return self.selector.report_unavailable(self.context.model)
 
 
 class SharedRequestPacer:
