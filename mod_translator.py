@@ -507,6 +507,7 @@ def translate_with_gemini(
     current_idx = 0
 
     start_time = time.time()
+    json_mime_unsupported = set()
     if show_progress:
         print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
@@ -552,10 +553,9 @@ def translate_with_gemini(
 
                 url = GEMINI_API_URL.format(current_model.removeprefix("models/"))
                 headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"responseMimeType": "application/json"},
-                }
+                payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                if current_model not in json_mime_unsupported:
+                    payload["generationConfig"] = {"responseMimeType": "application/json"}
 
                 if request_gate:
                     request_gate.wait(current_model, interval)
@@ -653,6 +653,11 @@ def translate_with_gemini(
                     except (TypeError, ValueError):
                         delay = min(60.0, interval * (2 ** min(retry_count, 3)))
                     time.sleep(delay)
+
+                elif response.status_code == 400 and "generationConfig" in payload:
+                    json_mime_unsupported.add(current_model)
+                    print(f"情報: モデル [{current_model}] はJSON形式指定なしで再試行します。")
+                    continue
 
                 elif response.status_code in (400, 404, 422):
                     try:
