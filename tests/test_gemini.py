@@ -57,8 +57,8 @@ class TestGemini(unittest.TestCase):
         ]
         selected = get_prioritized_models("key")
         self.assertEqual(selected, [
-            "gemini-3.7-flash", "gemini-3.6-flash",
-            "gemini-3.1-flash-lite", "gemma-4-26b-a4b-it",
+            "gemini-3.7-flash", "gemini-3.1-flash-lite",
+            "gemma-4-26b-a4b-it", "gemini-3.6-flash",
             "gemini-3.8-flash-preview"
         ])
         self.assertEqual(get_prioritized_models("key", gemma_only=True), ["gemma-4-26b-a4b-it"])
@@ -145,24 +145,54 @@ class TestGemini(unittest.TestCase):
 
     @patch("mod_translator.time.sleep")
     @patch("mod_translator.requests.post")
-    def test_read_timeout_splits_without_losing_or_repeating_keys(self, post, sleep):
+    def test_read_timeout_switches_model_and_splits_batch(self, post, sleep):
         from requests.exceptions import ReadTimeout
         calls = []
 
         def respond(url, headers, json, timeout):
-            batch = __import__("json").loads(json["contents"][0]["parts"][0]["text"].split("\n\n", 1)[1])
-            calls.append(list(batch))
+            batch = __import__("json").loads(json["contents"][0]["parts"][0]["text"].split("\\n\\n", 1)[1])
+            calls.append((url, list(batch)))
             self.assertEqual(timeout, (10, 45))
-            if len(batch) > 1:
+            if "gemini-3.8-flash" in url:
                 raise ReadTimeout("read timeout")
             return response_for({key: value + "訳" for key, value in batch.items()})
 
         post.side_effect = respond
         source = {"a": "Stone", "b": "Grass", "c": "Coal", "d": "Iron"}
-        actual = translate_with_gemini(source, "key", ModelSelector(["gemini-3.8-flash"]))
+        selector = ModelSelector(["gemini-3.8-flash", "gemini-3.7-flash"])
+        actual = translate_with_gemini(source, "key", selector)
         self.assertEqual(actual, {key: value + "訳" for key, value in source.items()})
-        self.assertEqual(post.call_count, 7)
-        self.assertEqual([batch[0] for batch in calls if len(batch) == 1], list(source))
+        self.assertEqual(post.call_count, 3)
+        self.assertIn("gemini-3.8-flash", calls[0][0])
+        self.assertEqual([keys for _, keys in calls[1:]], [["a", "b"], ["c", "d"]])
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post")
+    def test_503_switches_immediately_to_other_model(self, post, sleep):
+        calls = []
+
+        def respond(url, headers, json, timeout):
+            calls.append(url)
+            if "gemini-3.8-flash" in url:
+                return Mock(status_code=503)
+            return response_for({"test": "石"})
+
+        post.side_effect = respond
+        selector = ModelSelector(["gemini-3.8-flash", "gemini-3.5-flash-lite"])
+        self.assertEqual(
+            translate_with_gemini({"test": "Stone"}, "key", selector),
+            {"test": "石"}
+        )
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("gemini-3.5-flash-lite", calls[1])
+
+    @patch("mod_translator.time.sleep")
+    @patch("mod_translator.requests.post", return_value=Mock(status_code=503))
+    def test_all_503_models_stop_without_false_success(self, post, sleep):
+        selector = ModelSelector(["gemini-3.8-flash", "gemma-4-26b-a4b-it"])
+        with self.assertRaisesRegex(RuntimeError, "すべて失敗"):
+            translate_with_gemini({"test": "Stone"}, "key", selector)
+        self.assertEqual(post.call_count, 2)
 
     @patch("mod_translator.requests.post")
     def test_flash_requests_low_thinking(self, post):
