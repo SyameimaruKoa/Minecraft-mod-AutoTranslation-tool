@@ -10,6 +10,7 @@ import traceback
 import threading
 import math
 import queue
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from translation_parallel import translate_parallel_batches, translate_model_pool_batches, SynchronizedModelSelector, SharedRequestPacer
 from mod_scan_cache import ModScanCache, TranslationSpeedProfile, TranslationETA, ClusterETA
@@ -24,7 +25,7 @@ DEFAULT_FORMAT_FALLBACK = 34  # pack.mcmetaが見つからない場合のデフ�
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
 )
-GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?key={}"
+GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
 LMSTUDIO_API_URL = "http://localhost:1234/v1/chat/completions"
 PLAMO_API_URL = "http://127.0.0.1:1234/v1/completions"
@@ -55,121 +56,139 @@ ERROR_KEYWORDS = [
     "Service Unavailable",
 ]
 
-# 優先モデルリスト（ユーザー指定）
-DEFAULT_PRIORITY = [
-    "gemini-2.5-flash", # そろそろ終わる
-    "gemini-2.5-flash-lite", # そろそろ終わる
+# 翻訳対象モデルはAPIの対応機能と系統から判定し、モデルIDを固定しない。
+GEMINI_NON_TEXT_MARKERS = (
+    "image", "tts", "audio", "live", "embedding", "transcribe",
+    "robotics", "computer-use", "video", "speech"
+)
 
-    "gemini-flash-lite-latest",
-    "gemini-flash-latest",
-    "gemma-3n-e2b-it",
-    "gemma-3n-e4b-it",
-    "gemma-3-27b-it",
-    "gemma-3-12b-it",
-    "gemma-3-8b-it", # 消えた？
-    "gemma-3-4b-it",
-    "gemma-3-2b-it", # 増えた？
-    "gemma-3-1b-it",
-]
 
 # --- ヘルパー関数 ---
 
 
 def get_model_settings(model_name):
-    """
-    モデル名に基づいて、最適なバッチサイズ（行数）とリクエスト間隔（秒）を返す。
-    """
-    if not model_name:
-        return 45, 2.0  # デフォルト
+    """モデル系統に応じた初期バッチ件数・送信間隔（制限時は別途バックオフ）。"""
+    name = (model_name or "").lower()
+    if name.startswith("gemma-"):
+        return 5, 2.1
+    if "flash-lite" in name:
+        return 8, 5.0
+    if "flash" in name:
+        return 8, 6.2
+    if "pro" in name:
+        return 6, 10.0
+    return 8, 5.0
 
-    name = model_name.lower()
 
-    # デフォルト値
-    batch_size = 40
-    interval = 5.0
-
-    if "gemma" in name:
-        # Gemma 3: TPM制限がきついため、小分けにする
-        batch_size = 5
-        interval = 2.1
-
-    elif "flash-lite" in name:
-        # Lite: 大量バッチ可能だが、JSON崩壊リスクがあるため300程度に留める
-        batch_size = 300
-        interval = 5.0
-
-    elif "flash" in name:
-        # Flash: RPM制限がきつい
-        batch_size = 50
-        interval = 6.2
-
-    elif "pro" in name:
-        batch_size = 60
-        interval = 32.0
-
-    return batch_size, interval
+def _gemini_model_priority(name):
+    """小さいほど優先。既定ではProやテキスト以外の専用モデルを使わない。"""
+    lower = name.lower()
+    if any(marker in lower for marker in GEMINI_NON_TEXT_MARKERS):
+        return None
+    if lower.startswith("gemini-"):
+        if "flash-lite" in lower:
+            family = 1
+        elif "flash" in lower:
+            family = 0
+        else:
+            return None
+    elif lower.startswith("gemma-"):
+        family = 2
+    else:
+        return None
+    match = re.search(r"-(\d+)(?:\.(\d+))?(?:\.(\d+))?", lower)
+    version = tuple(int(value or 0) for value in match.groups()) if match else (0, 0, 0)
+    is_preview = any(marker in lower for marker in ("preview", "-exp", "experimental"))
+    is_alias = not match
+    return (is_preview, family, is_alias, *(-value for value in version), lower)
 
 
 def get_available_gemini_models(api_key):
-    """APIキーを使用して現在利用可能なモデル一覧を取得する"""
+    """models.listを全ページ取得し、generateContent対応モデルのみ返す。"""
+    models = []
+    page_token = None
+    visited = set()
+    headers = {"x-goog-api-key": api_key}
     try:
-        url = GEMINI_MODELS_URL.format(api_key)
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
+        while True:
+            params = {"pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            response = requests.get(
+                GEMINI_MODELS_URL, headers=headers, params=params, timeout=20
+            )
+            if response.status_code != 200:
+                try:
+                    error = response.json().get("error", {})
+                    status = str(error.get("status", ""))
+                    message = str(error.get("message", ""))
+                    reasons = {
+                        item.get("reason") for item in error.get("details", [])
+                        if isinstance(item, dict) and item.get("reason")
+                    }
+                except (ValueError, AttributeError, TypeError):
+                    status, message, reasons = "", "", set()
+                message = message.replace(api_key, "[REDACTED]")[:250]
+                if "API_KEY_INVALID" in reasons or "api key not valid" in message.lower():
+                    raise RuntimeError(
+                        "Gemini APIキーが無効です。start.ps1 のGemini選択後に"
+                        "[C]で保存済みキーを更新してください"
+                        f" (HTTP {response.status_code})"
+                    )
+                details = " / ".join(part for part in (status, message) if part)
+                suffix = f": {details}" if details else ""
+                raise RuntimeError(
+                    f"モデル一覧取得失敗 (HTTP {response.status_code}){suffix}"
+                )
             data = response.json()
-            models = [m["name"].replace("models/", "") for m in data.get("models", [])]
-            return models
-        else:
-            print(f"警告: モデル一覧の取得に失敗しました (HTTP {response.status_code})")
-            return []
-    except Exception as e:
-        print(f"警告: モデル一覧取得中にエラーが発生: {e}")
-        return []
+            for model in data.get("models", []):
+                name = model.get("name", "")
+                methods = model.get("supportedGenerationMethods", [])
+                if (
+                    isinstance(name, str) and name.startswith("models/")
+                    and "generateContent" in methods
+                ):
+                    models.append(name.removeprefix("models/"))
+            next_token = data.get("nextPageToken")
+            if not next_token:
+                break
+            if next_token in visited:
+                raise RuntimeError("モデル一覧のページトークンが循環しました")
+            visited.add(next_token)
+            page_token = next_token
+    except (requests.RequestException, ValueError, RuntimeError) as error:
+        raise RuntimeError(f"Geminiモデル一覧を取得できません: {error}") from error
+    return list(dict.fromkeys(models))
 
 
 def get_prioritized_models(api_key, gemma_only=False):
-    """
-    優先順位リストと利用可能なモデルを照らし合わせて、
-    利用可能なモデルのリストを優先度順に返す。
-    """
+    """API公開モデルを安定版・系統・バージョン順に選択する。"""
     print("情報: 利用可能なGeminiモデルを探索中...")
-    available_models = get_available_gemini_models(api_key)
-
-    # Geminiが使えない、または見つからない場合のGemmaフォールバックリスト
-    gemma_fallback = [m for m in DEFAULT_PRIORITY if "gemma" in m]
-
-    if not available_models:
-        print(
-            f"警告: モデル一覧が取得できなかったため、Gemmaモデルをフォールバックとして使用します。"
-        )
-        return gemma_fallback
-
-    valid_models = []
-
-    # 優先リスト順にチェック
-    for candidate in DEFAULT_PRIORITY:
-        # Gemma限定モード時は、名前に "gemma" が含まれていないモデルを除外する
-        if gemma_only:
-            if "gemma" not in candidate.lower():
-                continue
-
-        if candidate in available_models:
-            valid_models.append(candidate)
-
-    if not valid_models:
-        if gemma_only:
-            print(
-                "警告: 指定されたGemmaモデルが見つかりませんでした。デフォルトのGemmaモデルを強制使用します。"
-            )
-            return gemma_fallback
-        else:
-            print(
-                "警告: 優先リスト内のモデルが見つかりませんでした。Gemmaモデルを使用します。"
-            )
-            return gemma_fallback
-
-    print(f"情報: {len(valid_models)} 個の有効なモデルが見つかりました。")
-    return valid_models
+    candidates = get_available_gemini_models(api_key)
+    models = [
+        name for name in candidates
+        if _gemini_model_priority(name) is not None
+        and (not gemma_only or name.lower().startswith("gemma-"))
+    ]
+    models.sort(key=_gemini_model_priority)
+    if models and not gemma_only:
+        # 同一系統が過負荷でも別の系統へ早く到達できるようにする。
+        groups = {}
+        for name in models:
+            rank = _gemini_model_priority(name)
+            groups.setdefault((rank[0], rank[1]), deque()).append(name)
+        models = []
+        for is_preview in (False, True):
+            while any(groups.get((is_preview, family)) for family in (0, 1, 2)):
+                for family in (0, 1, 2):
+                    group = groups.get((is_preview, family))
+                    if group:
+                        models.append(group.popleft())
+    if not models:
+        kind = "Gemma" if gemma_only else "Gemini / Gemma"
+        raise RuntimeError(f"翻訳に使用できる{kind}モデルがAPIから返されませんでした")
+    print(f"情報: {len(models)} 個の有効なモデルが見つかりました。")
+    return models
 
 
 def repair_and_parse_json(text):
@@ -245,6 +264,9 @@ class ModelSelector:
         self.failure_counts = {m: 0 for m in models}  # モデルごとの連続失敗回数
         self.fallback_start_time = None  # フォールバック開始時刻
 
+    def model_count(self):
+        return len(self.models)
+
     def get_current_model(self):
         """現在使用すべきモデルを返す。必要に応じて復帰やスキップを行う。"""
 
@@ -260,15 +282,7 @@ class ModelSelector:
                 return model
             self.current_idx += 1
 
-        # 3. もし最後まで到達してしまったら（全滅）
-        print(
-            "警告: 全てのモデルが使用不可になりました。制限をリセットして再試行します。"
-        )
-        self.disabled_models.clear()
-        self.failure_counts = {m: 0 for m in self.models}
-        self.current_idx = 0
-        self.fallback_start_time = None
-        return self.models[0]
+        raise RuntimeError("Geminiの利用可能なモデルがすべて失敗しました。翻訳を中断します")
 
     def _try_recover_priority(self):
         """より優先度の高い（インデックスが小さい）モデルが使えるか確認し、戻す"""
@@ -329,6 +343,29 @@ class ModelSelector:
             return "switched"
 
         return "continue"
+
+    def report_unavailable(self, model_name=None):
+        """503やタイムアウト時は同じモデルを繰り返さず、次の候補を試す。"""
+        if self.current_idx >= len(self.models):
+            return "continue"
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return "continue"
+        print(f"警告: モデル [{model}] が応答しないため次のモデルへ切り替えます。")
+        self.failure_counts[model] = 0
+        self._switch_to_next()
+        return "switched"
+
+    def disable_model(self, model_name=None):
+        """永続的なモデルエラーでは直ちに候補から除外する。"""
+        if self.current_idx >= len(self.models):
+            return "disabled"
+        model = model_name or self.models[self.current_idx]
+        if model != self.models[self.current_idx]:
+            return "continue"
+        self.disabled_models.add(model)
+        self._switch_to_next()
+        return "disabled"
 
     def _switch_to_next(self):
         """次のモデルへインデックスを進める"""
@@ -488,6 +525,32 @@ def translate_google_batch(text_list):
         return text_list
 
 
+def _gemini_thinking_config(model_name):
+    name = model_name.removeprefix("models/").lower()
+    if re.match(r"^gemini-3(?:[.-]|$)", name):
+        return {"thinkingLevel": "low"}
+    if name.startswith("gemini-2.5-flash") and "lite" not in name:
+        return {"thinkingBudget": 0}
+    return None
+
+
+def _gemini_batches(text_dict, max_items, max_chars=2400):
+    batches = []
+    current = {}
+    length = 0
+    for key, value in text_dict.items():
+        item_length = len(str(key)) + len(str(value)) + 8
+        if current and (len(current) >= max_items or length + item_length > max_chars):
+            batches.append(current)
+            current = {}
+            length = 0
+        current[key] = value
+        length += item_length
+    if current:
+        batches.append(current)
+    return batches
+
+
 def translate_with_gemini(
     text_dict, api_key, selector, workers=1, request_gate=None, show_progress=True
 ):
@@ -517,18 +580,20 @@ def translate_with_gemini(
     translated_results = {}
     keys = list(text_dict.keys())
     total = len(keys)
-    current_idx = 0
+    pending = deque(list(batch) for batch in _gemini_batches(text_dict, get_model_settings(selector.get_current_model())[0]))
 
     start_time = time.time()
+    json_mime_unsupported = set()
+    thinking_unsupported = set()
     if show_progress:
         print(f"情報: モデル [{selector.get_current_model()}] で開始します。")
 
-    while current_idx < total:
+    while pending:
         current_model = selector.get_current_model()
         batch_size, interval = get_model_settings(current_model)
 
-        # 本来このループで処理すべきキーのリスト
-        original_batch_keys = keys[current_idx : current_idx + batch_size]
+        # 未処理項目を保持し、タイムアウトで分割しても取りこぼさない。
+        original_batch_keys = pending.popleft()
 
         # 実際にリクエストを送るターゲット（リトライ時に減っていく）
         current_batch_target = list(original_batch_keys)
@@ -543,10 +608,19 @@ def translate_with_gemini(
 
         batch_success = False
         retry_count = 0
-        max_retries = 3  # 通常のリトライ回数
+        max_retries = 3  # モデルごとのリトライ回数
+        request_attempts = 0
+        max_attempts = max(12, selector.model_count() * 3)  # 複数モデルの切替も許容
 
         # バッチ内ループ（全員救出するまで、あるいは諦めるまで回る）
         while not batch_success:
+            if request_attempts >= max_attempts:
+                raise RuntimeError(
+                    f"Geminiが応答せず再試行上限に達しました。"
+                    f"未翻訳{len(current_batch_target)}件は翻訳成功として保存しません"
+                )
+            current_model = selector.get_current_model()
+            _, interval = get_model_settings(current_model)
             response = None
 
             # ターゲット用のDictを作成
@@ -555,23 +629,31 @@ def translate_with_gemini(
             try:
                 prompt = prompt_base + json.dumps(batch_dict, ensure_ascii=False)
 
-                url = GEMINI_API_URL.format(current_model) + f"?key={api_key}"
-                headers = {"Content-Type": "application/json"}
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"responseMimeType": "application/json"},
-                }
+                url = GEMINI_API_URL.format(current_model.removeprefix("models/"))
+                headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+                payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                config = {}
+                if current_model not in json_mime_unsupported:
+                    config["responseMimeType"] = "application/json"
+                if current_model not in thinking_unsupported:
+                    thinking = _gemini_thinking_config(current_model)
+                    if thinking:
+                        config["thinkingConfig"] = thinking
+                if config:
+                    payload["generationConfig"] = config
 
                 if request_gate:
                     request_gate.wait(current_model, interval)
-                response = requests.post(url, headers=headers, json=payload, timeout=90)
+                request_attempts += 1
+                response = requests.post(url, headers=headers, json=payload, timeout=(10, 45))
 
                 if response.status_code == 200:
                     try:
                         result_json = response.json()
-                        content_text = result_json["candidates"][0]["content"]["parts"][
-                            0
-                        ]["text"]
+                        parts = result_json["candidates"][0]["content"]["parts"]
+                        content_text = "".join(
+                            part.get("text", "") for part in parts if not part.get("thought")
+                        )
 
                         # パース & 修復
                         translated_batch = repair_and_parse_json(content_text)
@@ -593,8 +675,12 @@ def translate_with_gemini(
                             # 結果を統合
                             valid_count_in_response = 0
                             for k, v in translated_batch.items():
-                                if k in text_dict:  # 元データにあるものだけ採用
-                                    translated_results[k] = str(v)
+                                if (
+                                    k in batch_dict and isinstance(v, str)
+                                    and is_valid_translation(batch_dict[k], v)
+                                    and format_tokens_preserved(batch_dict[k], v)
+                                ):
+                                    translated_results[k] = v
                                     valid_count_in_response += 1
 
                             # まだ翻訳できていないキーを計算（ドリルダウン）
@@ -618,8 +704,9 @@ def translate_with_gemini(
                                     print(
                                         f"情報: {progress}件 成功。残り {len(remaining_keys)}件 を再試行するのじゃ..."
                                     )
-                                    # 進捗があったならリトライカウントをリセットして、執念深く食らいつく
+                                    selector.report_success()
                                     retry_count = 0
+                                    request_attempts = 0
                                     current_batch_target = remaining_keys
                                     time.sleep(2)
                                     continue  # ループ継続
@@ -628,47 +715,119 @@ def translate_with_gemini(
                                     print(
                                         f"警告: 進捗なし。残り {len(remaining_keys)}件..."
                                     )
+                                    action = selector.report_failure()
+                                    if action in ("switched", "disabled"):
+                                        retry_count = 0
+                                        continue
                                     retry_count += 1
                                     time.sleep(2)
 
                         else:
                             raise ValueError("Response is not a dict")
 
-                    except (KeyError, json.JSONDecodeError, ValueError) as e:
+                    except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValueError) as e:
                         print(f"警告: Gemini応答の解析失敗: {e}")
+                        action = selector.report_failure()
+                        if action in ("switched", "disabled"):
+                            retry_count = 0
+                            continue
                         retry_count += 1
                         time.sleep(2)
 
                 elif response.status_code == 429:
-                    print(f"警告: レート制限 (429) 発生。")
+                    print(f"警告: モデル [{current_model}] のレート制限 (429) が発生しました。")
                     action = selector.report_failure()
-                    if action in ["switched", "disabled"]:
-                        time.sleep(2)
-                        # モデルが変わったので、今のターゲット(current_batch_target)のまま再試行
+                    if action in ("switched", "disabled"):
+                        retry_count = 0
                         continue
-                    else:
-                        time.sleep(interval * 2)
+                    retry_count += 1
+                    retry_after = getattr(response, "headers", {}).get("Retry-After", "")
+                    try:
+                        delay = max(0.0, min(float(retry_after), 60.0))
+                    except (TypeError, ValueError):
+                        delay = min(60.0, interval * (2 ** min(retry_count, 3)))
+                    time.sleep(delay)
+
+                elif response.status_code == 400:
+                    try:
+                        message = str(response.json().get("error", {}).get("message", "")).lower()
+                    except (ValueError, AttributeError, TypeError):
+                        message = ""
+                    if "thinking" in message and "thinkingConfig" in config:
+                        thinking_unsupported.add(current_model)
+                        print(f"情報: [{current_model}] 思考量指定を外して再試行します。")
+                        continue
+                    if "responseMimeType" in config and any(
+                        term in message for term in ("json", "responsemime", "response_mime")
+                    ):
+                        json_mime_unsupported.add(current_model)
+                        print(f"情報: [{current_model}] JSON形式指定を外して再試行します。")
+                        continue
+                    print(f"警告: モデル [{current_model}] はリクエストを拒否しました (HTTP 400)")
+                    selector.disable_model()
+                    retry_count = 0
+                    continue
+
+                elif response.status_code in (404, 422):
+                    try:
+                        message = response.json().get("error", {}).get("message", "")
+                    except (ValueError, AttributeError, TypeError):
+                        message = ""
+                    message = str(message).replace(api_key, "[REDACTED]")
+                    print(f"警告: モデル [{current_model}] は利用できません (HTTP {response.status_code}: {message[:160]})")
+                    selector.disable_model()
+                    retry_count = 0
+                    continue
+
+                elif response.status_code in (401, 403):
+                    raise PermissionError(
+                        f"Gemini APIの認証またはアクセス権限に問題があります (HTTP {response.status_code})"
+                    )
+
+                elif response.status_code in (502, 503, 504):
+                    print(f"警告: Gemini API HTTP {response.status_code} (モデル: {current_model})")
+                    selector.report_unavailable()
+                    retry_count = 0
+                    continue
 
                 else:
-                    print(f"APIエラー: {response.status_code} - {response.text}")
+                    print(f"APIエラー: HTTP {response.status_code} (モデル: {current_model})")
                     action = selector.report_failure()
-                    if action in ["switched", "disabled"]:
-                        time.sleep(2)
+                    if action in ("switched", "disabled"):
+                        retry_count = 0
                         continue
-                    time.sleep(2)
                     retry_count += 1
+                    time.sleep(min(60.0, 2 ** min(retry_count, 5)))
 
-            except Exception as e:
+            except requests.exceptions.Timeout:
+                selector.report_unavailable()
+                if len(current_batch_target) > 1:
+                    half = len(current_batch_target) // 2
+                    pending.appendleft(current_batch_target[half:])
+                    current_batch_target = current_batch_target[:half]
+                    request_attempts = 0
+                    print(
+                        f"警告: Gemini応答タイムアウト [{current_model}]。"
+                        f"次のモデルで{len(current_batch_target)}件ずつ再試行します。"
+                    )
+                else:
+                    print(f"警告: Gemini応答タイムアウト [{current_model}] (1件)")
+                retry_count = 0
+                continue
+
+            except PermissionError:
+                raise
+            except requests.RequestException as e:
                 print(f"通信エラー: {e}")
+                action = selector.report_failure()
+                if action in ("switched", "disabled"):
+                    retry_count = 0
+                    continue
                 retry_count += 1
-                time.sleep(2)
+                time.sleep(min(60.0, 2 ** min(retry_count, 5)))
 
             # リトライ上限を超えた場合
-            if (
-                not batch_success
-                and retry_count >= max_retries
-                and (response is None or response.status_code != 429)
-            ):
+            if not batch_success and retry_count >= max_retries:
                 remaining = len(
                     [k for k in current_batch_target if k not in translated_results]
                 )
@@ -676,14 +835,13 @@ def translate_with_gemini(
                     print(
                         f"エラー: {remaining}件 はどうしても翻訳できんかった。悔しいがスキップして進むぞ。"
                     )
-                # 強制的に次へ
-                batch_success = True
-                break
+                # 別のモデルを試す。どの候補も使えなければエラーとして停止する。
+                selector.report_unavailable()
+                retry_count = 0
+                continue
 
         # 進捗計算
-        processed = current_idx + len(original_batch_keys)
-        if processed > total:
-            processed = total  # 表示用補正
+        processed = len(translated_results)
 
         percent = (processed / total) * 100
         elapsed_time = time.time() - start_time
@@ -703,12 +861,10 @@ def translate_with_gemini(
                 f"  進捗: {processed}/{total} ({percent:.1f}%) - 残り予想: {eta_str} - 使用中: {current_model}"
             )
 
-        if batch_success:
-            current_idx += len(original_batch_keys)
-            if request_gate is None:
-                time.sleep(interval)
+        if batch_success and request_gate is None and pending:
+            time.sleep(interval)
 
-    return translated_results
+    return {key: translated_results[key] for key in keys if key in translated_results}
 
 
 def load_plamo_glossary(path):

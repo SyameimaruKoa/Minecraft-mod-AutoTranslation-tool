@@ -102,6 +102,31 @@ function Get-Env-Variable {
     }
     return $null
 }
+
+function Set-Env-Variable {
+    param([string]$Key, [string]$Value)
+    $lines = @()
+    if (Test-Path -LiteralPath $ENV_FILE) {
+        $lines = @(Get-Content -LiteralPath $ENV_FILE -Encoding UTF8)
+    }
+    $keyPattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    $lines = @($lines | Where-Object { $_ -notmatch $keyPattern })
+    $lines += "$Key=$Value"
+    $absolutePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ENV_FILE)
+    [System.IO.File]::WriteAllLines($absolutePath, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Read-GeminiApiKey {
+    $secureKey = Read-Host "Gemini API Keyを入力" -AsSecureString
+    $pointer = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+    try {
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+        $secureKey.Dispose()
+    }
+}
 #endregion
 
 #region メイン処理開始
@@ -195,32 +220,38 @@ switch ($engine_choice) {
     "2" {
         $args_list += "--engine", "gemini"
         
-        # .envチェック
+        # 保存済みキーの再利用または変更
         $env_key = Get-Env-Variable "GEMINI_API_KEY"
-        
-        if (-not [string]::IsNullOrWhiteSpace($env_key)) {
-            Write-Log ".envファイルからAPIキーを読み込んだぞ。" "Green"
-            $api_key = $env_key
+        $change_key = [string]::IsNullOrWhiteSpace($env_key)
+        if (-not $change_key) {
+            Write-Log ".envファイルにGemini APIキーが登録されておる。" "Green"
+            $key_choice = Read-Host " [Enter] 保存済みキーを使う / [C] 新しいキーに変更"
+            $change_key = $key_choice -match '^[Cc]$'
         }
-        else {
-            $api_key = Read-Host "Gemini API Keyを入力 (右クリックで貼り付け)"
+        if ($change_key) {
+            $api_key = Read-GeminiApiKey
             if ([string]::IsNullOrWhiteSpace($api_key)) {
                 Write-Log "API Keyがないと動かぬぞ。終了じゃ。" "Red"
-                exit
+                exit 1
             }
-            
-            # 保存確認
-            Write-Host "このAPIキーを .env ファイルに保存しておくか？(次回から入力を省略できるぞ)" -ForegroundColor Yellow
-            $save_env = Read-Host " [Y] Yes / [N] No"
-            if ($save_env -match "^[Yy]") {
+            $save_key = -not [string]::IsNullOrWhiteSpace($env_key)
+            if (-not $save_key) {
+                Write-Host "このAPIキーを .env ファイルに保存しておくか？(次回から入力を省略できるぞ)" -ForegroundColor Yellow
+                $save_env = Read-Host " [Y] Yes / [N] No"
+                $save_key = $save_env -match '^[Yy]'
+            }
+            if ($save_key) {
                 try {
-                    "GEMINI_API_KEY=$api_key" | Out-File $ENV_FILE -Encoding UTF8
-                    Write-Log ".env ファイルに保存したぞ。" "Green"
+                    Set-Env-Variable -Key "GEMINI_API_KEY" -Value $api_key
+                    Write-Log ".env のGemini APIキーを保存・更新したぞ。" "Green"
                 }
                 catch {
-                    Write-Log "保存に失敗したようじゃが、処理は続行するぞ。" "Red"
+                    Write-Log "APIキーの保存に失敗したが、この実行では入力済みキーを使用するぞ。" "Yellow"
                 }
             }
+        }
+        else {
+            $api_key = $env_key
         }
         $args_list += "--key", "$api_key"
 
@@ -353,7 +384,16 @@ Write-Host ""
 Write-Log "よし、翻訳開始じゃ！" "Green"
 
 # デバッグ表示用
-$debug_args = $args_list | ForEach-Object { if ($_ -match " ") { """$_""" } else { $_ } }
+$debug_args = for ($i = 0; $i -lt $args_list.Count; $i++) {
+    $arg = [string]$args_list[$i]
+    if ($i -gt 0 -and $args_list[$i - 1] -eq "--key") {
+        $arg = "********"
+    }
+    elseif ($arg -match '^--key=') {
+        $arg = "--key=********"
+    }
+    if ($arg -match " ") { """$arg""" } else { $arg }
+}
 Write-Host "実行コマンド: $PY_EXEC $SCRIPT_NAME $debug_args" -ForegroundColor DarkGray
 Write-Host "--------------------------------------------------"
 

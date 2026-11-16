@@ -32,6 +32,45 @@ jobs:
                   if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
                       throw "start.ps1 must have a UTF-8 BOM"
                   }
+            - name: Verify Gemini API key replacement and preserved .env settings
+              shell: pwsh
+              run: |
+                  $tokens = $null
+                  $errors = $null
+                  $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                      (Join-Path $PWD "start.ps1"),
+                      [ref]$tokens,
+                      [ref]$errors
+                  )
+                  $functions = $ast.FindAll({
+                      param($node)
+                      $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                      $node.Name -in @("Get-Env-Variable", "Set-Env-Variable")
+                  }, $true)
+                  if ($functions.Count -ne 2) { throw "Gemini key helpers missing" }
+                  foreach ($function in $functions) {
+                      . ([scriptblock]::Create($function.Extent.Text))
+                  }
+                  $script:ENV_FILE = Join-Path $env:RUNNER_TEMP "gemini-key-test.env"
+                  try {
+                      [System.IO.File]::WriteAllText(
+                          $script:ENV_FILE,
+                          ("UNRELATED=日本語" + [Environment]::NewLine + "GEMINI_API_KEY=old-key" + [Environment]::NewLine),
+                          [System.Text.UTF8Encoding]::new($false)
+                      )
+                      Set-Env-Variable -Key "GEMINI_API_KEY" -Value "new-key"
+                      if ((Get-Env-Variable "GEMINI_API_KEY") -ne "new-key") {
+                          throw "Key replacement failed"
+                      }
+                      if ((Get-Env-Variable "UNRELATED") -ne "日本語") {
+                          throw "Existing .env values were changed"
+                      }
+                      $count = @(Select-String -LiteralPath $script:ENV_FILE -Pattern '^GEMINI_API_KEY=').Count
+                      if ($count -ne 1) { throw "Duplicate API keys remain" }
+                  }
+                  finally {
+                      Remove-Item -LiteralPath $script:ENV_FILE -ErrorAction SilentlyContinue
+                  }
             - name: Create Python virtual environment
               run: python -m venv .venv
             - name: Install test dependencies
